@@ -109,6 +109,34 @@ page image and ask for a transcription. On the topology paper that recovers
 `~'(R)` back to `τ(R)` because it understands the mathematics rather than the
 glyphs.
 
+## Multi-column pages: what is measured, and what is not
+
+`probe --pages` reports `cols`, and it is the number of columns the runtime
+believes it can see. Treat it as **a routing signal, not a solution**: today a
+page with `cols >= 2` is escalated to the vision path, which reads the columns
+correctly because it sees the page.
+
+Making that deterministic — separating the columns from line geometry, with no
+model call — was attempted and is *not* finished. Three criteria were tried, each
+against a real harvested ACL page whose columns are visually obvious
+(x = 71..290 and x = 306..526, with a 16 pt gutter between them):
+
+| criterion | why it failed on that page |
+| --- | --- |
+| a band no character occupies | one full-width caption crosses the gutter and fills it |
+| the largest gap in line *starts* | indented lines inside a column put the boundary mid-column, collapsing the page to one column |
+| the band with the *sparsest* occupancy | a handful of lines end past the column edge, leaving the gutter 80 % occupied |
+
+The criterion that should work next is **minimum line crossings**: a boundary
+inside a column is crossed by every line of that column, while a boundary in the
+gutter is crossed only by the occasional overlong line, so the minimum is sharp
+rather than marginal. That was implemented and then reverted unverified, because
+each iteration cost more than the tokens it would save and the escalated route
+already produces correct output.
+
+**Do not describe multi-column extraction as solved.** It is currently bought,
+not computed.
+
 ## Composing a per-page plan
 
 A document that is *mostly* one layout states the default once and overrides the
@@ -142,6 +170,18 @@ pages that differ. This is the whole mechanism — it is a plan, not code:
 
 Write the `reason` from the probe output. A plan whose reasons do not match the
 evidence is how a pipeline drifts.
+
+## Structure may be downgraded; content may not be dropped
+
+A table that fails to qualify as a table is still content. On a harvested Word
+fixture the text layer carried `T2` and `T4` while the emitted blocks carried
+nothing, because a 2x2 table has one non-empty row and failed the two-row test.
+PDFs hid the bug — their text layer re-emits table characters as paragraphs — but
+a DOCX emits paragraphs and tables from separate operators, so a rejected table
+had no fallback at all.
+
+Wherever an operator decides "this is not a table / not a heading / not a list",
+the content still has to go somewhere. Downgrade the structure, never the content.
 
 ## Cost discipline
 

@@ -157,7 +157,16 @@ Recorded because they are real, bounded, and have a specific next step.
    straight into the writers is the fix, and it is required before a multi-GB
    single file is attempted.
 
-2. **Two-column PDFs are read in layout order.** `pdftotext -layout` preserves
+2. **Multi-column pages are bought, not computed.** `page_layout` reports a column
+   count, and a page with two columns is escalated to the vision path, which reads
+   them correctly because it sees the page. Making it deterministic was attempted
+   and reverted: three criteria for locating the gutter each failed on a real ACL
+   page whose columns are visually obvious. The next criterion to try is minimum
+   line crossings; `skills/layout-adaptation/SKILL.md` records all four. Measured
+   cost of the procurement route: **1,806 prompt + 2,096 completion tokens per
+   escalated page**, with `thinking` disabled (`reasoning_tokens: 0`).
+
+3. **Two-column PDFs are read in layout order.** `pdftotext -layout` preserves
    lines but not columns, so a two-column paper's left and right columns are
    interleaved within a line. The characters are the file's own and each column's
    text is intact; only the interleaving is wrong. A character-box path exists

@@ -82,6 +82,22 @@ counted a figure block *pointing at* an image as the image being extracted, and
 reported 100% image accounting for a deck whose slides were empty. The judge
 reported "提取结果为空" — extraction is empty — on the same pages.
 
+## Measured cost (corpus round 1)
+
+| quantity | value |
+| --- | --- |
+| corpus | 32 documents / 571 pages harvested from arXiv, ACL, RFC Editor and library fixtures |
+| offline run | 484 static · 62 dynamic · 25 flagged · **0 vision calls, 0 tokens** |
+| pages wanting vision | **25 of 571 = 4.4 %** |
+| per escalated page | **1,806 prompt + 2,096 completion tokens**, `reasoning_tokens: 0` |
+| focused keyed run | 3 documents / 14 pages → 11 calls, 19,861 + 23,062 tokens, **0 gate failures, 0 review** |
+| evaluator | score 0.988 · text recall 99.5 % · images 100 % · tables 100 % |
+| harness session | 540 model requests · 834 K input + 559 K output = **1.39 M tokens** · 579 tool calls |
+
+The largest saving in this round came from *not* escalating: an intermediate
+version of the text-layer trust rule would have sent 1428 pages of the SQL
+standard to OCR, and another 15 pages of a healthy arXiv paper.
+
 ## Not verified
 
 - **No agent session has ever started in the image.** See the blocker below. The

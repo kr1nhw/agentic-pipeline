@@ -194,6 +194,30 @@ def op_office_tables(ctx: OpContext, params: dict[str, Any]) -> OpResult:
             cleaned = [[str(cell or "").strip() for cell in row] for row in rows]
             cleaned = [row for row in cleaned if any(row)]
             if len(cleaned) < MIN_TABLE_ROWS:
+                # A table too small or too empty to be a table is still CONTENT.
+                #
+                # Dropping it lost data silently: on a harvested Word fixture the
+                # text layer carried `T2` while the blocks carried nothing, because
+                # a 2x2 table has one non-empty row and failed the table test.
+                # PDFs hid this — their text layer re-emits table characters as
+                # paragraphs — but a DOCX emits paragraphs and tables from separate
+                # operators, so a rejected table had no fallback at all.
+                #
+                # Structure may be downgraded. Content may not be dropped.
+                text = " | ".join(cell for row in cleaned for cell in row if cell).strip()
+                if text:
+                    blocks.append(
+                        Block(
+                            block_id=f"{ctx.state.page_id}:tp{len(blocks)}",
+                            page_id=ctx.state.page_id,
+                            order=len(blocks),
+                            type="paragraph",
+                            text=text,
+                            source_op="office_tables",
+                            confidence=0.9,
+                            checks={"downgraded_from": "table", "reason": "too few non-empty rows"},
+                        )
+                    )
                 continue
             blocks.append(
                 Block(

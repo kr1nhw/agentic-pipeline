@@ -380,3 +380,40 @@ def test_a_file_with_no_units_is_reported_not_fatal(tmp_path: Path, registry: Re
     by_name = {Path(doc.source_path).name: doc for doc in report.docs}
     assert by_name["good.md"].units >= 1
     assert by_name["corrupt.pdf"].units == 0
+
+
+def test_a_degenerate_office_table_keeps_its_text(tmp_path: Path, registry: Registry) -> None:
+    """Structure may be downgraded; content may not be dropped.
+
+    A harvested Word fixture lost `T2` and `T4` entirely: its tables have one
+    non-empty row, failed the two-row table test, and — unlike a PDF, whose text
+    layer re-emits table characters as paragraphs — a DOCX emits paragraphs and
+    tables from separate operators, so a rejected table had no fallback.
+    """
+    from docx import Document
+
+    from docpipe.ingest.office import DocxSession
+    from docpipe.ops.struct_ops import op_office_tables
+    from docpipe.api.types import DocumentRecord, OpContext, PageState
+
+    path = tmp_path / "tiny.docx"
+    document = Document()
+    document.add_paragraph("P1")
+    document.add_table(rows=2, cols=2).cell(0, 0).text = "T2"
+    document.save(str(path))
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = DocxSession(path, "doc", config, tmp_path / "work")
+    record = PageRecord(doc_id="doc", page_no=1, page_id="doc:p1", kind="docx_flow")
+    state = PageState(record=record)
+    context = OpContext(
+        doc=DocumentRecord(doc_id="doc", source_path=str(path), format="docx", bytes=0, sha256="doc"),
+        state=state,
+        work_dir=tmp_path / "work",
+        out_dir=tmp_path / "out",
+        config=config,
+        session=session,
+    )
+    result = op_office_tables(context, {})
+    text = " ".join(block.text for block in result.blocks)
+    assert "T2" in text, f"table content was dropped: {text!r}"
