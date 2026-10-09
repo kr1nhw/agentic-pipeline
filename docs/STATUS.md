@@ -112,6 +112,18 @@ remain a flag on their own: a decoding failure with no ambiguity.
 | flags | 106 | **0** |
 | score (209 pages) | 0.85–0.90 | **1.000** |
 
+Re-evaluated over the whole fresh corpus:
+
+| 100 documents / 3 207 pages | before | after |
+| --- | --- | --- |
+| `garbled` flags | **166** | **0** |
+| pages flagged | 252 | **90** |
+| score | 0.987 | **0.992** |
+
+What remains is 69 `table_missing` — artifacts from before the table fix, which the
+re-run now in flight should collapse — plus 12 linked-but-unread images, 9
+`text_lost` and one empty output.
+
 **The gate was never affected.** No page of the fresh corpus is in review for a
 text-shape reason, so this was a measurement defect and not a cost one: the pipeline
 had been reading those papers correctly the whole time, and only the number
