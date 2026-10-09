@@ -84,6 +84,36 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Model token usage, measured with the model switched on
+
+The corpus run again with the vision path enabled and a cap of 30 calls, cold cache,
+so the numbers are what the pipeline actually spends rather than what it saved:
+
+| quantity | value |
+| --- | --- |
+| documents / pages | 39 / **1 374** |
+| **vision calls** | **19** (1.4 % of pages) |
+| prompt tokens | 32 775 |
+| completion tokens | 45 220 |
+| **total tokens** | **77 995** |
+| **per page** | **0.014 calls · 56.8 tokens** |
+| per escalated page | ~4 105 tokens |
+| pages repaired deterministically instead | **423** — 14× the number that reached the model |
+| pages left for review | 13 |
+
+The counterfactual is what makes the number mean something. Without the deterministic
+rungs, the 423 pages they repaired would have joined the 19 that genuinely needed a
+model, at ~4 105 tokens each: about **1.8 M tokens**, or 1 316 tokens a page. The
+pipeline spends 56.8. That is a **23× reduction**, and it is the largest single
+effect of the work in this session — larger than the trust-rule correction that
+stopped 400-odd GPO pages being sent to vision, because that correction removed a
+whole file family while the ladder removes a class of page.
+
+The per-call cost also rose from the 1 806 + 2 096 measured early on to ~2 195 + 3 643,
+because attempts after the first now ask for thinking (`reasoning_tokens: 1 836` on a
+sampled call). Cheaper per call and rarer, but the honest figure is the one measured
+now.
+
 ### Corpus round 11 — the corpus evaluates clean
 
 | corpus, 1 374 pages | start of this work | now |
