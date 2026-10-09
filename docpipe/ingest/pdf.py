@@ -49,50 +49,12 @@ def _pdftotext() -> str | None:
     return shutil.which("pdftotext")
 
 
-#: Fraction of tokens that must look like words before a page's text is believed.
-#:
-#: Measured, not guessed. On the four documents whose text layer is unembedded and
-#: carries no unicode maps — the only group the font metadata cannot clear:
-#:
-#:   topology paper   (1950s scan)  word shape 0.47   text GARBLED, unusable
-#:   1982 survey                    word shape 0.92   text correct, rare substitutions
-#:   Congressional Record           word shape 0.93   text correct
-#:   Federal Register               word shape 0.77   text correct
-#:
-#: The threshold sits between the one document that must be refused and the three
-#: that must not, and the margin is wide enough to be a rule rather than a fit.
-WORD_SHAPE_FLOOR = 0.60
-
-_WORD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-_WORD_EDGE = ".,;:!?()[]{}<>\"'`/*_+=|\\"
-
-
-def text_word_shape(text: str) -> float:
-    """Fraction of whitespace-separated tokens that are made of letters.
-
-    This is the second opinion on a text layer. Font metadata can only say how
-    the characters *should* have been decoded: a font with no ToUnicode CMap and
-    no standard encoding might have produced the text by guessing from glyph
-    names. The text itself says whether that guess landed. Prose is built of
-    letter-only tokens; a layer decoded from glyph names is built of fragments
-    like ``~'(R)``, ``R tl]`` and ``U{Ry``, which are letters padded with the
-    symbols whose glyph names happened to be nearby.
-
-    Deliberately language-neutral: it asks for the shape of a word, not for a
-    dictionary, so a page in a language this was never tested on is not punished
-    for it. A page with fewer than twenty tokens returns 1.0 — too little
-    evidence to convict, and the font metadata on its own is not enough.
-    """
-    tokens = [token for token in text.split() if any(ch.isalnum() for ch in token)]
-    if len(tokens) < 20:
-        return 1.0
-    good = 0
-    for token in tokens:
-        core = token.strip(_WORD_EDGE)
-        if len(core) >= 2 and all(ch in _WORD_CHARS or ch in "-'" for ch in core):
-            good += 1
-    return good / len(tokens)
-
+# The measure itself lives in `docpipe.textstats`, because the evaluator asks the
+# same question of a page's output and the two must not drift: this reader used
+# word shape, the evaluator used a share of alphanumeric characters, and the
+# evaluator's version flagged 110 chart, table and roll-call pages while the one
+# genuinely mis-decoded document in reach passed it.
+from docpipe.textstats import WORD_SHAPE_FLOOR, text_word_shape  # noqa: E402  (re-exported)
 
 def _decode(data: bytes) -> str:
     for encoding in ("utf-8", "utf-16", "latin-1"):

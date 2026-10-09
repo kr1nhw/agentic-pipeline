@@ -94,8 +94,15 @@ def op_pptx_pictures(ctx: OpContext, params: dict[str, Any]) -> OpResult:
             continue
         uri = None
         if extract:
+            # Extract THIS picture, by name, rather than asking whether the slide
+            # is one big picture: a slide holding two pictures failed the
+            # one-picture test and produced figure blocks with no bytes at all.
+            path = None
             try:
-                path = session.full_bleed_picture(ctx.state.page_no) if shape.get("width") else None
+                if hasattr(session, "picture"):
+                    path = session.picture(ctx.state.page_no, shape.get("name", ""))
+                if path is None:
+                    path = session.full_bleed_picture(ctx.state.page_no)
             except Exception:  # noqa: BLE001 - a missing image must not fail the slide
                 path = None
             if path is not None:

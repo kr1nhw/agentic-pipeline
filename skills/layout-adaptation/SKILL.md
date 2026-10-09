@@ -273,6 +273,46 @@ deterministic path provably failed. Two more rules:
   content, operator and parameters, so re-running a corpus costs nothing. If a
   re-run reports vision calls on unchanged input, something is wrong — report it.
 
+## One measure, one definition
+
+Two callers asked the same question — "is this text debris?" — and answered it with
+two different formulas. The reader used word shape; the evaluator counted the share
+of alphanumeric characters over all characters, which counts newlines and the
+indentation a layout-preserving extractor emits. A chart page is then mostly
+whitespace by character count:
+
+```
+'80\n              100\n              75\n'   ->  0.27   "garbled"
+```
+
+Every character there is meaningful. The evaluator flagged 110 pages of a harvested
+corpus on that measure and the samples were charts, result tables, a roll-call list
+of names and a letterspaced masthead. The one genuinely mis-decoded document to
+hand scored 0.90 on it: wrong in both directions, and confidently so.
+
+Word shape, on the same documents, with the floor the reader already used:
+
+| document | word shape | verdict |
+| --- | --- | --- |
+| 1950s scan, layer decoded from glyph names | **0.41** | debris |
+| 1982 survey | 0.92 | text |
+| 2021 ACL paper | 0.92 | text |
+| Congressional Record | 0.95 | text |
+| IRS form 1040 | 0.86 | text |
+
+Two rules follow. **Share the constant**: both callers now import
+`docpipe.textstats.text_word_shape` and `WORD_SHAPE_FLOOR`, so they cannot drift.
+**Let only letters vote**: a chart's numbers cannot be misspelled by a decoder, so a
+page of axis labels must be judged on its words. And a word may contain a hyphen, an
+apostrophe or an underscore — `place_of_birth` is a word, and calling it debris
+flags every identifier on a technical page.
+
+The same discipline applies to table expectations: the evaluator counted every
+rule-bounded region pdfplumber returns while the operator rejected single-row boxes
+and empty frames, so 68 pages were reported as losing a table that no reader would
+call a table. Detection is not expectation, and both sides now call
+`table_rows_accepted`.
+
 ## When the evidence is new
 
 If a page's signals match no archetype — a form, a musical score, a handwritten

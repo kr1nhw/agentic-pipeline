@@ -880,3 +880,73 @@ def test_evaluator_and_operator_agree_on_what_a_table_is() -> None:
     assert table_rows_accepted([["a", "", "", ""], ["", "", "", ""]])[0] is False
     # Rows with no content at all are not rows.
     assert table_rows_accepted([[""], ["  "]])[0] is False
+
+
+def test_garbling_is_judged_by_word_shape_not_by_whitespace() -> None:
+    """The evaluator and the reader must agree on what debris looks like.
+
+    They did not. The evaluator counted the share of alphanumeric characters over
+    all characters — including newlines and indentation — so a chart page, whose
+    text is one number per line, scored 0.27 and was reported as garbled. It
+    flagged 110 pages of the harvested corpus; the samples were charts, result
+    tables, a roll-call list and a letterspaced masthead, all correct. The single
+    genuinely mis-decoded document to hand scored 0.90 on the same measure.
+
+    Word shape separates them, and it is the measure the reader already uses for
+    the same question.
+    """
+    from docpipe.evaluate import looks_garbled
+    from docpipe.textstats import text_word_shape
+
+    # A mis-decoded layer: letters padded with the symbols whose glyph names were
+    # nearby. Real sample from a 1950s scan.
+    garbled = " ".join(["~'(R)", "R", "tl]", "U{Ry", "x", "ySI", "y", "E", "Y", "1t", "1S", "1n"] * 8)
+    # A chart's axis labels and values, one per line — the text that was flagged.
+    chart = "\n".join(["80", "nationality", "100", "place_of_birth", "75", "contains", "60", "place_lived"] * 8)
+    prose = (
+        "The House met at 6:30 p.m. and was called to order by the Speaker pro tempore. "
+        "The Chaplain offered the following prayer. The Journal of the previous day was read and approved. "
+    ) * 3
+
+    assert text_word_shape(garbled, letters_only=True) < 0.60
+    assert looks_garbled(garbled) is True, "a mis-decoded layer must be flagged"
+    assert looks_garbled(chart) is False, "a chart's labels are not debris"
+    assert looks_garbled(prose) is False
+
+
+def test_an_inset_picture_is_still_extracted(tmp_path: Path) -> None:
+    """A picture that is not the whole slide is still content.
+
+    `pptx_pictures` used `full_bleed_picture`, whose rule is "this slide IS this
+    picture" — right for choosing a page image for the vision path, wrong for
+    extraction, and it also gives up entirely when a slide holds more than one
+    picture. Measured across a 27-file harvested sample: one deck produced four
+    figure blocks carrying no image at all before the change, and none after.
+    """
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    from docpipe.config import Config
+    from docpipe.ingest.office import PptxSession
+
+    image_path = tmp_path / "inset.png"
+    Image.new("RGB", (64, 48), (200, 30, 30)).save(image_path)
+
+    deck_path = tmp_path / "inset.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    # A quarter of the slide: nowhere near full bleed.
+    slide.shapes.add_picture(str(image_path), Emu(0), Emu(0), Emu(2286000), Emu(1714500))
+    presentation.save(str(deck_path))
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = PptxSession(deck_path, "doc", config, tmp_path / "work")
+
+    # The full-bleed test compares POINTS with POINTS: it used the raw EMU area of
+    # the shape against a slide area in points, a ratio of about ten million, so
+    # every single-picture slide counted as full bleed and a quarter-slide inset
+    # was handed to the vision path as though it were the page.
+    assert session.full_bleed_picture(1) is None, "an inset must not be treated as the page image"
+    extracted = session.picture(1, session.slide_shapes(1)[0]["name"])
+    assert extracted is not None and extracted.is_file(), "an inset picture must still be extracted"

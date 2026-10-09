@@ -84,6 +84,57 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 7 — the full corpus completes, and two measures were wrong
+
+| quantity | value |
+| --- | --- |
+| run | **39 documents / 1 374 pages**, offline, clean finish (first complete full-corpus run) |
+| routes | 889 static · **413 adapted** · 62 dynamic · 10 needs review |
+| model tokens | **0** (917 pages resolved deterministically without a model) |
+| evaluator | score 0.968 · text recall 99.8 % · images 100 % · tables 92.5 % |
+| wall clock | 38 documents in ~23 min, ~1 s/page |
+
+**The segfault is found and fixed.** A corpus run had died three times with exit
+139 (SIGSEGV, `OOMKilled=false`) while extracting the 357-page Federal Register as
+the 16th document, taking the run's artifacts with it. PDFium is not thread-safe
+and the runner pools threads over page windows; every PDFium call in the session
+held `_PDFIUM_LOCK` except one — `page_lines`, the path the column escalation
+takes, loaded its page one line above the lock:
+
+    page = self._pdf[page_no - 1]      # FPDF_LoadPage, UNLOCKED
+    with _PDFIUM_LOCK:
+        textpage = page.get_textpage()
+
+It went unnoticed because `self._pdf[n]` is a call through `__getitem__` and an
+audit of parenthesised call sites never sees it. `tools/check_pdfium_lock.py` now
+walks the AST for call nodes and subscripts alike and runs as a test over every
+module that mentions PDFium. With it fixed, the Federal Register completes at the
+position that killed three runs, and the corpus finishes end to end.
+
+**Two measures were measuring the wrong thing**, both in the evaluator:
+
+- `table_missing` counted every rule-bounded region pdfplumber returns, while the
+  operator rejects single-row boxes, one-column lists and empty frames on purpose.
+  68 pages were flagged, five of which had emitted a table block at all.
+  `table_rows_accepted` is now the single definition, imported by the evaluator.
+- `garbled` counted alphanumeric characters over ALL characters, which counts
+  newlines and indentation: a chart page scored 0.27 ("garbled") because its text
+  is one number per line, and it flagged 110 pages whose samples were charts,
+  result tables, a roll-call list and a letterspaced masthead. Meanwhile the one
+  genuinely mis-decoded document to hand scored 0.90 on it. Word shape — the
+  measure the reader already uses for the same question — separates them cleanly:
+
+  | document | word shape | verdict |
+  | --- | --- | --- |
+  | topology paper, mis-decoded | **0.41** | flagged |
+  | 1982 survey | 0.92 | not flagged |
+  | 2021 ACL paper | 0.92 | not flagged |
+  | Congressional Record | 0.95 | not flagged |
+  | IRS form 1040 | 0.86 | not flagged |
+
+  Both callers now import `docpipe.textstats.text_word_shape`, because two
+  definitions of one idea drifted apart and neither was aware of the other.
+
 ### Corpus round 6 — what the evaluator caught on real Office documents
 
 Fourteen real-world Office files from Apache POI's test-data (bug-report
@@ -287,6 +338,11 @@ None of this affects the extraction runtime, which does not need the harness.
 | The probe profiled every page and then kept a sample | a 357-page issue was profiled three times over (probe + one pass per window) to answer questions about sixty pages |
 | DOCX recovery keyed element identity on `id()` | lxml recreates proxies per access, so paragraphs were both duplicated and dropped: 9 % text recall on a real Word file |
 | Running-head threshold collapsed to 2 pages | a two-slide deck lost its placeholder text from both slides |
+| One PDFium call outside the lock (`page_lines` page load) | a 357-page document segfaulted the process (exit 139) as the 16th document of a run, three times; the same document alone succeeded. Missed by an audit of parenthesised call sites, because `self._pdf[n]` is `__getitem__` |
+| The evaluator counted pdfplumber detections as expected tables | 68 pages flagged `table_missing` for single-row boxes, one-column lists and empty frames the operator rejects by design |
+| The evaluator's garbling check divided by all characters | flagged 110 chart, table and roll-call pages as debris while the one mis-decoded document scored 0.90 on the same measure |
+| A `notes` field was appended to without being initialised | `NameError` inside the document report; caught by the suite before it reached a run |
+| The probe harness tested a remote path with a local `[ -d ]` | always false, so probes silently ran the copy baked into the image instead of the working tree |
 | The sequential window path had no failure isolation | the pooled path caught a failing window and the single-window path did not, so a file that vanished mid-document exited 1 with 40 of 80 pages unread |
 
 ### A crash no longer takes the finished work with it
@@ -332,11 +388,11 @@ same pages.
 - **Thirty-one pages report `table_missing`** — a table the evaluator can see in
   the source that produced no table block. Unchanged by this round's work (32
   before), and the largest remaining content-quality gap.
-- **PDFium segfaults on a large document when it is not the first one read.**
-  Exit 139 with no Python traceback, reproducibly, on a 357-page issue as the
-  16th document; the same document alone succeeds. PDFium is not thread-safe and
-  the run uses a thread pool over page windows, so a leaked worker from an earlier
-  document is the likeliest source. `docpipe recover` now limits the damage.
+- **Forms report `tables 0 %`.** `f1040` and `f1120` are grids of boxes and the
+  evaluator expects the grid, but most of a form's cells are empty by design and
+  the acceptance rule rejects tables that are more than 60 % empty. Whether a form
+  should produce a table block, a set of field blocks, or both is an open design
+  question, not a bug to patch.
 - **IRS forms are refused.** `f1040.pdf` (2 units) and `f1120.pdf` (6 units) fail
   the gate on every page while carrying full text. Forms are the one archetype in
   the corpus with no working path: boxed fields, checkboxes and instructions that

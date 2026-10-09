@@ -150,12 +150,37 @@ class PptxSession(BaseSession):
         pictures = [s for s in shapes if s["is_picture"]]
         if len(pictures) != 1:
             return None
-        width, height = self.slide_dimensions(page_no)
+        width, height = self.slide_dimensions(page_no)  # points
         slide_area = float(width * height) or 1.0
         picture = pictures[0]
-        if picture["width"] * picture["height"] / slide_area < FULL_BLEED_FRACTION:
+        # Both sides in POINTS. `slide_shapes` publishes geometry in EMU, which is
+        # what every operator converts from, so the raw picture area is EMU^2 — and
+        # comparing it against a slide area in points^2 made the ratio about ten
+        # million, i.e. every single-picture slide counted as full bleed whatever
+        # its size. A quarter-slide inset was handed to the vision path as though it
+        # were the page.
+        picture_area = (
+            (picture["width"] / EMU_PER_POINT) * (picture["height"] / EMU_PER_POINT) if picture["width"] else 0.0
+        )
+        if picture_area / slide_area < FULL_BLEED_FRACTION:
             return None
         return self._extract_picture(page_no, picture["name"])
+
+    def picture(self, page_no: int, name: str) -> Path | None:
+        """Extract one picture's bytes, whatever size it is on the slide.
+
+        `full_bleed_picture` answers a different question — is this slide
+        fundamentally this picture? — and the vision path needs that answer,
+        because only then is the artwork a faithful "page image". Extraction does
+        not: a logo, a chart image or an inset photograph is still content.
+
+        `full_bleed_picture` also gives up as soon as a slide holds more than one
+        picture, so using it to decide whether to write bytes left every picture on
+        such a slide unextracted. Measured across a 27-file harvested sample: one
+        deck produced four figure blocks carrying no image at all before this, and
+        none after.
+        """
+        return self._extract_picture(page_no, name)
 
     def _extract_picture(self, page_no: int, name: str) -> Path | None:
         from pptx.enum.shapes import MSO_SHAPE_TYPE

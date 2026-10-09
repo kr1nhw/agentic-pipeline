@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from docpipe.config import Config
+from docpipe.textstats import WORD_SHAPE_FLOOR, text_word_shape
 from docpipe.schema import Block, PageRecord
 
 #: Words for the recall comparison. CJK is matched per character, because a
@@ -37,8 +38,10 @@ from docpipe.schema import Block, PageRecord
 WORD = re.compile(r"[A-Za-z0-9_]{2,}")
 CJK = re.compile(r"[\u4e00-\u9fff]")
 
-#: Output text this fraction non-word is treated as garbled rather than content.
-GARBLE_LIMIT = 0.35
+# The garbling threshold is `textstats.WORD_SHAPE_FLOOR`, shared with the reader.
+# A local limit lived here and it measured something else entirely: the share of
+# alphanumeric characters, whitespace included, which is a measure of how much
+# layout the extractor preserved rather than of whether the text is text.
 
 #: Weights for the document score. Text dominates because it is what most
 #: consumers actually use; images and tables are where the silent losses live.
@@ -115,23 +118,40 @@ def text_recall(source: str, output: str) -> float:
 
 
 def looks_garbled(text: str) -> bool:
-    """Text that is mostly punctuation and symbols is not text.
+    """Is this output text, or the debris of a text layer that was guessed at?
 
-    The measure is the share of *alphanumeric characters*, not the share of
-    characters inside dictionary-looking words. The first version of this counted
-    word lengths and flagged 14 of 18 honest pages: normal English runs about 0.80
-    alphanumeric, and a word-length heuristic scores it near its own threshold
-    because short words are common. Garbled output — interleaved columns,
-    mis-decoded glyphs — lands near 0.5, so the two are trivially separable.
+    The measure is word shape: the share of letter-bearing tokens that are letters
+    only. It is the SAME measure the reader uses to decide whether a text layer can
+    be trusted, imported so the two cannot drift apart — and they had drifted.
+
+    This function used to count the share of alphanumeric characters over all
+    characters, which counts newlines and the indentation a layout-preserving
+    extractor emits. A chart page is then mostly whitespace by character count:
+
+        '80\n              100\n              75\n'   ->  0.27  "garbled"
+
+    On the harvested corpus it flagged 110 pages, and the samples were charts,
+    result tables, a roll-call list of names and a letterspaced masthead — every
+    character meaningful. Meanwhile the one genuinely mis-decoded document to hand
+    (a 1950s scan whose layer renders `t(R)` as `~'(R)`) scored 0.90 on it.
+
+    Word shape, measured on the same documents:
+
+        topology paper, mis-decoded   0.41   -> flagged
+        2021 ACL paper                0.92   -> not flagged
+        Congressional Record          0.95   -> not flagged
+        IRS form 1040                 0.86   -> not flagged
+
+    Only tokens containing a letter vote, so a page of axis labels or a results
+    table is judged on its words rather than on its numbers.
     """
     stripped = text.strip()
     if len(stripped) < 40:
         return False
-    alphanumeric = sum(1 for char in stripped if char.isalnum())
-    return (
-        alphanumeric / len(stripped) < GARBLE_LIMIT
-        or stripped.count("\ufffd") > len(stripped) * 0.02
-    )
+    if stripped.count("\ufffd") > len(stripped) * 0.02:
+        # Replacement characters are a decoding failure with no ambiguity.
+        return True
+    return text_word_shape(stripped, letters_only=True) < WORD_SHAPE_FLOOR
 
 
 def source_facts(session: Any, page_no: int, kind: str) -> dict[str, int]:
