@@ -909,7 +909,6 @@ def test_garbling_is_judged_by_word_shape_not_by_whitespace() -> None:
     ) * 3
 
     assert text_word_shape(garbled, letters_only=True) < 0.60
-    assert looks_garbled(garbled) is True, "a mis-decoded layer must be flagged"
     assert looks_garbled(chart) is False, "a chart's labels are not debris"
     assert looks_garbled(prose) is False
 
@@ -1233,3 +1232,44 @@ def test_table_expectations_honour_the_operators_guards() -> None:
     assert table_check_skipped(Session({"profiled": True, "n_paths": 40}, timed_out=True), 1)
     # A page with paths and no timeout is checked as normal.
     assert table_check_skipped(Session({"profiled": True, "n_paths": 40}), 1) == ""
+
+
+def test_garbling_needs_font_evidence_as_well_as_word_shape() -> None:
+    """Word shape alone convicts mathematics, so it cannot convict on its own.
+
+    A fresh 3 207-page corpus reported 166 `garbled` pages, and the samples were
+    formula-dense mathematics: `σij,ts`, `(eit ejs ) = OP (1)`. Those are not words,
+    and the measure that says "text should be made of words" says they are debris.
+    The genuinely mis-decoded document to hand scored 0.41 — inside the 0.14–0.56
+    range those pages occupy — so no threshold on word shape separates them.
+
+    Font metadata does. A layer decoded from glyph names comes from fonts with no
+    Unicode map and no standard encoding; mathematics on a born-digital page comes
+    from fonts that have one. The reader has always required both, and the
+    evaluator now calls the same function rather than applying half of it.
+
+    | document | unicode ratio | word shape | verdict |
+    | --- | --- | --- | --- |
+    | 1950s scan | 0.00 | 0.41 | debris |
+    | 1982 survey | 0.00 | 0.96 | text |
+    | Congressional Record | 0.00 | 0.95 | text |
+    | formula-dense arXiv papers | 0.77 | 0.14-0.56 | text |
+    """
+    from docpipe.evaluate import looks_garbled
+    from docpipe.textstats import layer_looks_misdecoded
+
+    mathematics = " ".join(["σij,ts", "|σij,ts", "≤", "σ", "for", "all", "(t,", "s)", "and", "OP", "(1)"] * 8)
+    misdecoded = " ".join(["~'(R)", "R", "tl]", "U{Ry", "x", "ySI", "y", "E", "Y", "1t"] * 8)
+
+    # The same two texts, judged with and without font evidence.
+    assert layer_looks_misdecoded(0.0, 0.41) is True, "no maps and debris-shaped text is debris"
+    assert layer_looks_misdecoded(0.77, 0.30) is False, "mathematics on mapped fonts is not debris"
+    assert layer_looks_misdecoded(0.0, 0.95) is False, "a readable layer is not debris"
+
+    assert looks_garbled(misdecoded, unicode_ratio=0.0) is True, "the scan case must still be caught"
+    assert looks_garbled(mathematics, unicode_ratio=0.77) is False, "mathematics must not be flagged"
+    assert looks_garbled(mathematics, unicode_ratio=1.0) is False
+    # With no font evidence the evaluator must not convict on shape alone.
+    assert looks_garbled(mathematics) is False
+    # A decoding failure with no ambiguity is still a flag on its own.
+    assert looks_garbled("text \ufffd\ufffd\ufffd\ufffd more text " * 8, unicode_ratio=1.0) is True

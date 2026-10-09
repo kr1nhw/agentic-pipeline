@@ -37,6 +37,42 @@ _EDGE = ".,;:!?()[]{}<>\"'`/*_+=|\\"
 MIN_TOKENS = 20
 
 
+#: A font table this unmapped is what a scan put through OCR looks like: the
+#: characters were inferred from glyph names rather than read from a CMap.
+UNICODE_MAP_FLOOR = 0.15
+
+
+def layer_looks_misdecoded(unicode_ratio: float, word_shape: float) -> bool:
+    """Is this text layer debris? Two pieces of evidence, and both are required.
+
+    Font metadata says the characters *might* have been guessed at; the text says
+    whether the guess landed. Either one alone is wrong in a way that has already
+    cost real work:
+
+    * **Fonts alone** flagged the Congressional Record (329 unembedded fonts, no
+      unicode maps, text perfect), the Federal Register, and a 1982 survey whose
+      text reads `M. Jarke and J. Koch` — 51 pages and a 300-page issue sent to
+      vision for text that was never wrong.
+    * **Word shape alone** flags mathematics. Measured on a fresh corpus: 166 pages
+      of formula-dense arXiv papers scored 0.14–0.56, because `σij,ts`, `(eit`,
+      `OP (1)` are not words. The measure cannot tell notation from debris — the
+      genuinely mis-decoded document to hand scored 0.41, inside their range.
+
+    Together they separate all four cases whose answer is known by eye:
+
+    | document | unicode ratio | word shape | verdict |
+    | --- | --- | --- | --- |
+    | 1950s scan, layer guessed from glyph names | 0.00 | **0.41** | debris |
+    | 1982 survey | 0.00 | 0.96 | text |
+    | Congressional Record | 0.00 | 0.95 | text |
+    | formula-dense arXiv papers | 0.77 | 0.14–0.56 | text |
+
+    The reader has always applied it this way. The evaluator applied word shape on
+    its own, which is why it reported 166 pages of correct mathematics as garbled.
+    """
+    return unicode_ratio < UNICODE_MAP_FLOOR and word_shape < WORD_SHAPE_FLOOR
+
+
 def text_word_shape(text: str, *, letters_only: bool = False) -> float:
     """Fraction of tokens that are made of letters.
 

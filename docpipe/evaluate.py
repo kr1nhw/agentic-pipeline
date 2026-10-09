@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from docpipe.config import Config
-from docpipe.textstats import WORD_SHAPE_FLOOR, text_word_shape
+from docpipe.textstats import layer_looks_misdecoded, text_word_shape
 from docpipe.schema import Block, PageRecord
 
 #: Words for the recall comparison. CJK is matched per character, because a
@@ -154,7 +154,23 @@ def recall_split(source: str, output: str, document_output: str = "") -> tuple[f
     return (matched + deduplicated) / len(source_tokens), deduplicated
 
 
-def looks_garbled(text: str) -> bool:
+def layer_unicode_ratio(session: Any, page_no: int) -> float:
+    """The share of the page's fonts carrying a Unicode map, or 1.0 if unknown.
+
+    1.0 means "no evidence of a guessing decoder", which is the safe default: an
+    evaluator that cannot establish the precondition must not convict on word shape
+    alone, because word shape alone convicts mathematics.
+    """
+    try:
+        report = session.font_report() if hasattr(session, "font_report") else None
+        if report and report.get("total"):
+            return float(report.get("unicode_ratio", 1.0))
+    except Exception:  # noqa: BLE001 - an unavailable signal is not evidence of a defect
+        pass
+    return 1.0
+
+
+def looks_garbled(text: str, unicode_ratio: float = 1.0) -> bool:
     """Is this output text, or the debris of a text layer that was guessed at?
 
     The measure is word shape: the share of letter-bearing tokens that are letters
@@ -188,7 +204,12 @@ def looks_garbled(text: str) -> bool:
     if stripped.count("\ufffd") > len(stripped) * 0.02:
         # Replacement characters are a decoding failure with no ambiguity.
         return True
-    return text_word_shape(stripped, letters_only=True) < WORD_SHAPE_FLOOR
+    # Two pieces of evidence, both required — the reader's rule, not a second
+    # opinion invented here. Word shape alone reported 166 pages of correct
+    # mathematics as garbled on a fresh corpus: `σij,ts` and `OP (1)` are not words,
+    # and the mis-decoded document this flag exists to catch scored 0.41, inside the
+    # range those pages occupy (0.14–0.56).
+    return layer_looks_misdecoded(unicode_ratio, text_word_shape(stripped, letters_only=True))
 
 
 def source_facts(session: Any, page_no: int, kind: str) -> dict[str, int]:
@@ -313,7 +334,7 @@ def evaluate_page(
 
     if verdict.source_chars and not verdict.output_chars:
         verdict.flags.append("empty_output (source has text, output has none)")
-    if output_text and looks_garbled(output_text):
+    if output_text and looks_garbled(output_text, layer_unicode_ratio(session, record.page_no)):
         verdict.flags.append("garbled (output text is mostly non-alphanumeric)")
 
     facts = source_facts(session, record.page_no, record.kind)

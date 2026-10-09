@@ -54,7 +54,11 @@ def _pdftotext() -> str | None:
 # word shape, the evaluator used a share of alphanumeric characters, and the
 # evaluator's version flagged 110 chart, table and roll-call pages while the one
 # genuinely mis-decoded document in reach passed it.
-from docpipe.textstats import WORD_SHAPE_FLOOR, text_word_shape  # noqa: E402  (re-exported)
+from docpipe.textstats import (  # noqa: E402  (re-exported)
+    WORD_SHAPE_FLOOR,
+    layer_looks_misdecoded,
+    text_word_shape,
+)
 
 def _decode(data: bytes) -> str:
     for encoding in ("utf-8", "utf-16", "latin-1"):
@@ -625,7 +629,7 @@ class PdfSession(BaseSession):
         if report.get("ocr_like"):
             shape = text_word_shape(self.page_text(page_no))
             report["word_shape"] = round(shape, 3)
-            if shape < WORD_SHAPE_FLOOR:
+            if layer_looks_misdecoded(report.get("unicode_ratio", 0.0), shape):
                 return 0.2
             # The fonts cannot vouch for the layer and the text does. The text
             # wins: it is the thing being judged.
