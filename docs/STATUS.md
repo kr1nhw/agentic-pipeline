@@ -84,6 +84,59 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 6 — what the evaluator caught on real Office documents
+
+Fourteen real-world Office files from Apache POI's test-data (bug-report
+attachments, sampled with a stride): 5 pptx, 6 docx, plus a legacy `.doc` and
+`.ppt` as negative cases. The evaluator, not a review, found the bugs.
+
+| quantity | before | after |
+| --- | --- | --- |
+| text recall | 94.1 % | **100.0 %** |
+| pages flagged | 13 | **2** |
+| score | 0.933 | **0.975** |
+
+Three defects, each general:
+
+- **DOCX recovery read each paragraph twice, or lost it.** The coverage backstop
+  keyed "already read" on `id(element)`, and lxml hands out a fresh proxy object
+  per access, so a paragraph's identity changes between passes and a freed address
+  can be reused by another element. One real Word file scored **9 % text recall**
+  while the reader's own text layer held every character. Identity is now the
+  element's XPath; the regression test was confirmed to fail against the old code.
+- **Repeated text on two pages was deleted as a running head.** The threshold
+  collapsed to two on a two-page document, so a two-slide deck's placeholder was
+  removed from both slides as typesetter noise. Two pages cannot distinguish a
+  header from content that repeats; the floor is three.
+- **Expected outcomes were reported as errors.** An offline run that leaves a page
+  for review because no vision client exists is behaving as configured. Those
+  messages now travel in a separate `notes` channel.
+
+### Wall clock: two costs that dominated large documents
+
+Both were found by running a 357-page Federal Register issue, and both are general.
+
+| per page, same document | before | after |
+| --- | --- | --- |
+| `page_layout` | 969 ms | 215 ms |
+| `text_layer_trust` | 866 ms | 1.3 ms |
+| signalling total | 1 865 ms | **244 ms** (7.6×) |
+| Federal Register, whole document | 665 s (once it ran at all) | **278 s** |
+
+- **`font_report`'s cache was never written.** The guard read a field nothing
+  assigned, so `pdffonts` re-ran on every call — once per page through
+  `page_layout`, at 943 ms a time on a document with 1711 fonts.
+- **The probe read every page to route on sixty.** Producing a unit means
+  profiling it, and each execution window enumerated the whole document before
+  filtering to its own range, so a 357-page issue was profiled three times over.
+  `enumerate_units` now takes an optional page selection: the probe asks for its
+  sample, each window for its range, and a format that ignores the argument stays
+  correct and merely slow.
+
+Before these, the Federal Register produced **no extracted page in six minutes**
+and had not finished after fourteen; it now completes 357 pages in one pass —
+327 static, 26 adapted, 4 left for review, no model calls.
+
 ### Corpus round 5 — government documents, and the rule they broke
 
 Seven documents harvested from govinfo and the IRS (12.4 MiB): two daily issues
@@ -228,6 +281,12 @@ None of this affects the extraction runtime, which does not need the harness.
 | `Accept-Encoding: gzip` sent to the SEC, which urllib does not decode | EDGAR's JSON arrived as gzip bytes and every filing failed with a decode error |
 | `pdffonts` output parsed by token index | its `type` column contains a space (`Type 1C`), so every field to the right shifted by one: `emb` read the encoding and `uni` read the subset flag — on the documents where it mattered most |
 | Font metadata treated as a verdict on the text layer | the Congressional Record's 329 unembedded, unmapped fonts extract perfectly; the rule refused all 51 pages, and would have refused a 300-page Federal Register too |
+| A multi-line edit moved the window's processing loop into the `TypeError` fallback | every window returned zero outcomes, which reached the report as a document with zero units — the same signature as an empty file. Tests caught it; an invariant now logs `window_produced_nothing` |
+| `enumerate_units(pages=…)` narrowing shipped without the callers | the runner's window loop ended up inside the `except TypeError` branch while fixing it, and probes ran against the image's baked copy rather than the working tree |
+| `font_report`'s cache guard read a field that was never assigned | `pdffonts` re-ran per page: 943 ms on a 1711-font document, ~5 minutes of a 357-page run |
+| The probe profiled every page and then kept a sample | a 357-page issue was profiled three times over (probe + one pass per window) to answer questions about sixty pages |
+| DOCX recovery keyed element identity on `id()` | lxml recreates proxies per access, so paragraphs were both duplicated and dropped: 9 % text recall on a real Word file |
+| Running-head threshold collapsed to 2 pages | a two-slide deck lost its placeholder text from both slides |
 | The sequential window path had no failure isolation | the pooled path caught a failing window and the single-window path did not, so a file that vanished mid-document exited 1 with 40 of 80 pages unread |
 
 ## Open findings

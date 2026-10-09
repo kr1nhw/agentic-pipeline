@@ -229,6 +229,29 @@ had no fallback at all.
 Wherever an operator decides "this is not a table / not a heading / not a list",
 the content still has to go somewhere. Downgrade the structure, never the content.
 
+## What the signals actually cost
+
+Profiling a page is not free, and the cost is not where it looks. Measured on a
+357-page, 5.7 MiB Federal Register issue, per page:
+
+| signal | cost | note |
+| --- | --- | --- |
+| `page_size` | 5 ms | PDFium geometry |
+| `page_text` | 23 ms | one `pdftotext` per **32-page window**, shared |
+| `page_layout` | 215 ms | PDFium object walk — the floor for deciding anything per page |
+| `text_layer_trust` | 1.3 ms | cached font table + word shape |
+
+Two lessons from getting here:
+
+1. **A cache guard is not a cache.** `font_report` checked a field that was never
+   assigned, so `pdffonts` re-ran on every call — 943 ms per page on a document
+   with 1711 fonts, once per page through `page_layout`. The whole per-page cost
+   was 1 865 ms before and 244 ms after.
+2. **Read the pages you were asked about.** The probe materialised every unit and
+   kept a sample; each execution window enumerated the whole document and filtered
+   to its range. A large document was profiled three times over. `enumerate_units`
+   takes an optional page selection — use it, and honour it if you write a format.
+
 ## Cost discipline
 
 Two costs matter and only one of them is tokens. Wall-clock is the other, and a
