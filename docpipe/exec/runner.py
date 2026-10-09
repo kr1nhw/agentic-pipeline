@@ -72,6 +72,14 @@ PROBE_SAMPLE = 60
 #: Running heads repeat on this fraction of pages before they are treated as such.
 RUNNING_HEAD_FRACTION = 0.7
 
+#: A running head is a line that repeats because a typesetter put it on every
+#: page, so the evidence is repetition ACROSS the document. Two pages cannot
+#: supply it: "this text appears twice" and "this text is content that happens to
+#: appear twice" are the same observation, and the rule that cannot tell them
+#: apart deletes real content. Measured on a two-slide deck whose placeholder text
+#: was on both slides: the text was removed from the deck as a running head.
+MIN_RUNNING_HEAD_PAGES = 3
+
 
 @dataclass
 class DocumentJob:
@@ -312,12 +320,23 @@ class Runner:
         """
         pages: list[PageRecord] = []
         step = 1
-        limit = units
         if units > PROBE_FULL_LIMIT:
             step = max(1, units // PROBE_SAMPLE)
-            limit = units
+
+        # Decide which pages to read BEFORE reading any of them.
+        #
+        # Producing a unit means profiling the page, and the probe used to
+        # materialise every unit and then discard all but a sample — so a
+        # 357-page issue paid to profile 357 pages to route on sixty, and the
+        # execution windows then re-profiled the whole document again per window.
+        # The page numbers are known without touching the file, so the work can
+        # be confined to the pages that are actually wanted.
+        wanted = [page for page in range(1, units + 1) if page % step == 0 or page in (1, units)]
 
         try:
+            enumerated = list(session.enumerate_units(pages=wanted))
+        except TypeError:
+            # A third-party format that predates the argument: correct, just slow.
             enumerated = list(session.enumerate_units())
         except Exception as exc:  # noqa: BLE001 - a reader that dies mid-document
             self.log("enumerate_failed", doc_id=session.doc_id, error=f"{type(exc).__name__}: {exc}")
@@ -480,14 +499,35 @@ class Runner:
         session = job.session_factory(job.path, job.doc_id, self.config)
         outcomes: list[UnitOutcome] = []
         try:
-            seeds = [seed for seed in session.enumerate_units() if start <= seed.page_no <= end]
+            # Ask for this window's pages rather than reading the document and
+            # filtering: with several windows the old form profiled every page in
+            # the document once per window.
+            try:
+                seeds = list(session.enumerate_units(pages=range(start, end + 1)))
+            except TypeError:
+                # A format written before the argument existed: correct, just slow.
+                seeds = [seed for seed in session.enumerate_units() if start <= seed.page_no <= end]
             for seed in seeds:
                 if self.budget.exhausted:
                     break
-                outcome = self._run_unit(job, plan, session, seed)
-                outcomes.append(outcome)
+                outcomes.append(self._run_unit(job, plan, session, seed))
         finally:
             session.close()
+
+        # Every seed produces an outcome, so a window that read seeds and returned
+        # nothing has lost pages rather than found none. Without this the loss is
+        # invisible: it reaches the report as a document with zero units, which is
+        # what a genuinely empty file looks like. A restructure that moved the
+        # processing loop into the fallback branch did exactly that, and only the
+        # test suite noticed.
+        if seeds and not outcomes and not self.budget.exhausted:
+            self.log(
+                "window_produced_nothing",
+                doc_id=job.doc_id,
+                start=start,
+                end=end,
+                seeds=len(seeds),
+            )
         return outcomes
 
     # ── unit execution ──────────────────────────────────────────────────────
@@ -521,7 +561,7 @@ class Runner:
                 break
             runnable, why = self._rung_runnable(attempt_steps)
             if not runnable:
-                record.errors.append(f"escalation {escalations} skipped: {why}")
+                record.notes.append(f"escalation {escalations} skipped: {why}")
                 record.route = "needs_review"
                 break
             # Label by what produced the content, not by which rung was climbed.
@@ -770,7 +810,7 @@ class Runner:
                 seen.add(text)
                 occurrences[text] = occurrences.get(text, 0) + 1
 
-        threshold = max(2, int(len(records) * RUNNING_HEAD_FRACTION))
+        threshold = max(MIN_RUNNING_HEAD_PAGES, int(len(records) * RUNNING_HEAD_FRACTION))
         repeated = {text for text, count in occurrences.items() if count >= threshold}
         if not repeated:
             return
@@ -833,8 +873,10 @@ class Runner:
             if record.route == "needs_review":
                 needs_review.append(record.page_id)
         errors = [f"{job.doc_id}: {error}" for error in job.errors]
+        notes: list[str] = []
         for record in records:
             errors.extend(f"{record.page_id}: {error}" for error in record.errors[:3])
+            notes.extend(f"{record.page_id}: {note}" for note in record.notes[:3])
 
         return DocReport(
             doc_id=job.doc_id,
@@ -852,6 +894,7 @@ class Runner:
             pipeline_id=plan.pipeline_id or ("degraded" if plan.plan_degraded else None),
             needs_review=needs_review,
             errors=errors[:50],
+            notes=notes[:50],
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 

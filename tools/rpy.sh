@@ -47,9 +47,22 @@ if [[ "$mode" == "docker" ]]; then
   # path is readable by root and invisible to the container.
   # Run as root: these are read-only diagnostics over root-owned run output, and
   # the host tree above the mount points is not traversable by uid 1000.
+  # Mount the working tree over the installed package, exactly as a run does.
+  # Without this the probe imports the copy baked into the image, which lags the
+  # checkout by however many commits were made since the last build — so a probe
+  # can fail on a signature that exists, or pass on behaviour that is gone.
+  # Ask the HOST whether the tree is there. Testing a remote path with a local
+  # `[ -d ]` is always false, so the mount was silently dropped and every probe
+  # ran the copy baked into the image.
+  code_mount=""
+  if "$HERE/rssh.sh" "test -d $REMOTE_ROOT/code/docpipe" >/dev/null 2>&1; then
+    code_mount="-v $REMOTE_ROOT/code/docpipe:/opt/venv/lib/python3.12/site-packages/docpipe:ro"
+  else
+    echo "warning: no $REMOTE_ROOT/code/docpipe on the host; probing the image's baked copy" >&2
+  fi
   "$HERE/rssh.sh" "docker run --rm --user 0 --entrypoint python3 \
     -v $REMOTE_ROOT/tmp/$name:/tmp/$name:ro \
-    -v $REMOTE_ROOT:$REMOTE_ROOT:ro -w $REMOTE_ROOT \
+    -v $REMOTE_ROOT:$REMOTE_ROOT:ro $code_mount -w $REMOTE_ROOT \
     $IMAGE /tmp/$name$args"
 else
   "$HERE/rssh.sh" "cd $REMOTE_ROOT && python3 $REMOTE_ROOT/tmp/$name$args"

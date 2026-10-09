@@ -577,3 +577,173 @@ def test_a_file_that_vanishes_mid_document_does_not_end_the_run(tmp_path: Path) 
     path.unlink()
     record = Runner._document_record(runner, job)
     assert record.bytes == 0, "a vanished file must not raise out of the run"
+
+
+def test_docx_recovery_reads_each_paragraph_exactly_once(tmp_path: Path) -> None:
+    """The backstop must not duplicate text, and must not drop it either.
+
+    The first version keyed "already read" on `id(element)`. lxml builds a fresh
+    proxy object for an element each time it is accessed, so the same paragraph has
+    a different identity in each pass, and an address freed by one paragraph can be
+    reused by another. On a real Word file that produced a section whose recovered
+    text repeated the body's text while the body's own paragraphs went missing —
+    measured as 9% text recall on a document whose reader had every character.
+
+    A normal document has nothing to recover, so its sections must contain each
+    paragraph and each table cell exactly once.
+    """
+    from docx import Document
+
+    from docpipe.ingest.office import DocxSession
+
+    path = tmp_path / "plain.docx"
+    document = Document()
+    document.add_paragraph("FIRSTPARA")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "CELLA"
+    table.cell(1, 1).text = "CELLB"
+    document.add_paragraph("SECONDPARA")
+    document.save(str(path))
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = DocxSession(path, "doc", config, tmp_path / "work")
+    text = "\n".join(session.section_text(index) for index in range(1, len(session.sections()) + 1))
+
+    for token in ("FIRSTPARA", "SECONDPARA", "CELLA", "CELLB"):
+        assert text.count(token) == 1, f"{token} appeared {text.count(token)} times in {text!r}"
+
+
+def test_docx_recovery_does_not_repeat_a_body_paragraph(tmp_path: Path) -> None:
+    """A malformed table's cells are recovered; the body's paragraphs are not.
+
+    The same identity bug made the sweep re-read paragraphs the structured pass
+    had already emitted, so the unit's text grew a duplicate copy of itself.
+    """
+    import zipfile
+
+    from docpipe.ingest.office import DocxSession
+
+    # Three body paragraphs and two orphan cells reproduce the address reuse
+    # reliably; one paragraph of each did not, and a test that passes against the
+    # broken implementation is not a test.
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>BODYONE</w:t></w:r></w:p>
+    <w:p><w:r><w:t>BODYTWO</w:t></w:r></w:p>
+    <w:p><w:r><w:t>BODYTHREE</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tc><w:p><w:r><w:t>ORPHANONE</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>ORPHANTWO</w:t></w:r></w:p></w:tc>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+"""
+    relationships = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+"""
+    path = tmp_path / "mixed.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("word/document.xml", document_xml)
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = DocxSession(path, "doc", config, tmp_path / "work")
+    text = "\n".join(session.section_text(index) for index in range(1, len(session.sections()) + 1))
+
+    for token in ("BODYONE", "BODYTWO", "BODYTHREE", "ORPHANONE", "ORPHANTWO"):
+        assert text.count(token) == 1, f"{token} appeared {text.count(token)} times: {text!r}"
+
+
+def test_repeated_text_on_two_pages_is_not_a_running_head() -> None:
+    """Two occurrences are not evidence of a header.
+
+    The rule drops short text that repeats across a document, on the theory that a
+    line on every page is typesetter noise. With a two-page document the threshold
+    collapsed to two, so a text appearing on both pages — a two-slide deck's
+    placeholder, a two-page document's subject line — was deleted as a running
+    head. Found by the evaluator on a harvested deck, as 58% text recall on a
+    document whose reader had every character.
+    """
+    from docpipe.exec.runner import MIN_RUNNING_HEAD_PAGES, Runner
+    from docpipe.api.types import Block
+    from docpipe.schema import PageRecord
+
+    def record(page_no: int, texts: list[str]) -> PageRecord:
+        item = PageRecord(doc_id="doc", page_no=page_no, page_id=f"doc:p{page_no}", kind="slide")
+        item.blocks = [
+            Block(
+                block_id=f"doc:p{page_no}:s{index}",
+                page_id=f"doc:p{page_no}",
+                order=index,
+                type="paragraph",
+                text=text,
+                source_op="pptx_slide_text",
+            )
+            for index, text in enumerate(texts)
+        ]
+        return item
+
+    runner = Runner.__new__(Runner)
+    records = [record(1, ["PLACEHOLDER", "first slide body"]), record(2, ["PLACEHOLDER", "second slide body"])]
+    Runner._assemble(runner, records, plan=None)
+    kept = [block.text for item in records for block in item.blocks]
+
+    assert MIN_RUNNING_HEAD_PAGES >= 3
+    assert "PLACEHOLDER" in kept, f"content on two pages was deleted as a header: {kept}"
+    assert "first slide body" in kept and "second slide body" in kept
+
+
+def test_font_report_is_computed_once_per_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`pdffonts` is a property of the file, not of the page.
+
+    The cache guard read `self._font_report` and nothing ever assigned it, so the
+    subprocess ran again on every call — once per page, through `page_layout`. On a
+    document with 1711 fonts that is 943 ms per page: about five minutes of
+    subprocess on a 357-page issue, and the largest single component of its run.
+
+    Counted through `subprocess.run` rather than by timing, because a timing test
+    on a synthetic file would measure whatever the host happens to do.
+    """
+    import subprocess
+
+    from docpipe.ingest import pdf as pdfmod
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, *rest, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                "name                                 type              encoding         emb sub uni object ID\n"
+                "------------------------------------ ----------------- ---------------- --- --- --- ---------\n"
+                "Helvetica                            Type 1            WinAnsi          no  no  no      12  0\n"
+            ).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(pdfmod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pdfmod.subprocess, "run", fake_run)
+
+    session = pdfmod.PdfSession.__new__(pdfmod.PdfSession)
+    session._font_report = None
+    session.path = tmp_path / "any.pdf"
+
+    first = session.font_report()
+    second = session.font_report()
+
+    assert session._font_report is not None, "the report must be cached after the first call"
+    assert session.font_report() is first, "a later call must return the cached report"
+    assert len(calls) == 1, f"pdffonts ran {len(calls)} times for one document"

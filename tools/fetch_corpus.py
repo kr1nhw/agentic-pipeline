@@ -124,6 +124,24 @@ IRS_FORMS = [
     ("p15.pdf", "publication-two-column"),
 ]
 
+#: Apache POI's test-data is a corpus of REAL user documents: files attached to bug
+#: reports, contributed precisely because they broke a reader. That makes it the
+#: best available source of .pptx/.docx that were not produced by a template or by
+#: a library's own test suite, and the ones that are subtly wrong are the useful
+#: ones. Files are sampled with a stride so the sample spans the list rather than
+#: clustering on the first names, which are ordered by bug number.
+POI_DIRECTORIES = [
+    ("test-data/slideshow", ("pptx", "pptm"), "slides-real-world"),
+    ("test-data/document", ("docx", "docm"), "word-real-world"),
+]
+#: Legacy binary Office, included deliberately as negative cases: a `.doc` or
+#: `.ppt` is a document a real user has, it is NOT what python-docx/python-pptx
+#: can open, and the pipeline must report that rather than crash or invent text.
+POI_LEGACY = [
+    ("test-data/document", "doc", "legacy-binary-word"),
+    ("test-data/slideshow", "ppt", "legacy-binary-slides"),
+]
+
 #: SEC EDGAR filings. A 10-K's financial statements are the closest thing to a
 #: real-world spreadsheet: multi-level headings, footnote markers, and tables
 #: whose cells wrap. EDGAR also publishes `Financial_Report.xlsx` for many
@@ -207,6 +225,46 @@ class Harvester:
         return target
 
     # ── sources ─────────────────────────────────────────────────────────────
+
+    def poi_office(self, per_source: int) -> None:
+        """Real-world OOXML documents from Apache POI's test-data."""
+        print("Apache POI test-data (real-world pptx/docx from bug reports)")
+        for directory, extensions, archetype in POI_DIRECTORIES:
+            self._poi_directory(directory, extensions, archetype, per_source)
+        for directory, extension, archetype in POI_LEGACY:
+            self._poi_directory(directory, (extension,), archetype, 1)
+
+    def _poi_directory(self, directory: str, extensions: tuple[str, ...], archetype: str, take: int) -> None:
+        url = f"https://api.github.com/repos/apache/poi/contents/{directory}"
+        try:
+            listing = json.loads(self._open(url))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  FAIL listing {directory}: {str(exc)[:60]}")
+            return
+        wanted = [
+            item
+            for item in listing
+            if isinstance(item, dict)
+            and item.get("name", "").rsplit(".", 1)[-1].lower() in extensions
+            and item.get("download_url")
+        ]
+        if not wanted:
+            print(f"  none  {directory} ({'/'.join(extensions)})")
+            return
+        # A stride, not a prefix: names are bug numbers, and the first ten are
+        # whatever was reported first rather than whatever is representative.
+        stride = max(1, len(wanted) // max(1, take))
+        picked = wanted[::stride][:take]
+        for item in picked:
+            name = item["name"]
+            self.save(
+                name,
+                item["download_url"],
+                kind=extensions[0],
+                archetype=archetype,
+                source=f"poi:{directory}",
+                licence="Apache-2.0 (apache/poi test-data)",
+            )
 
     def govinfo(self, per_source: int) -> None:
         """GPO documents: three-column records, statutes, rules, reports."""
@@ -498,7 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip",
         action="append",
         default=[],
-        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar"],
+        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar", "poi"],
     )
     parser.add_argument("--synthetic-from", nargs="*", default=[], type=Path)
     args = parser.parse_args(argv)
@@ -519,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
         harvester.irs_forms(args.per_source)
     if "edgar" not in skipped:
         harvester.edgar(args.per_source)
+    if "poi" not in skipped:
+        harvester.poi_office(args.per_source)
     if "office" not in skipped:
         harvester.office_from_github(args.per_source)
     if "synthetic" not in skipped:

@@ -421,6 +421,18 @@ def _print_run_summary(report: Any, config: Config) -> None:
     failed = [doc for doc in report.docs if doc.errors]
     if failed:
         print(f"{len(failed)} document(s) reported errors; see {config.out_dir / 'report.json'}", file=sys.stderr)
+    # Expected outcomes are reported as what they are. Folding these into the
+    # error count made a correctly configured offline run announce that four
+    # documents had failed when two had merely done all they could without a
+    # vision client.
+    noted = [doc for doc in report.docs if doc.notes]
+    if noted:
+        pages = sum(len(doc.needs_review) for doc in noted)
+        print(
+            f"{len(noted)} document(s) have notes and {pages} page(s) for review; "
+            "the vision path is what those pages need",
+            file=sys.stderr,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Protocol, runtime_checkable
+from typing import Any, Collection, Iterator, Protocol, runtime_checkable
 
 from docpipe.api.types import CapabilityError, OpError, UnitSeed
 
@@ -56,7 +56,18 @@ class DocumentSession(Protocol):
 
     def units(self) -> int: ...
 
-    def enumerate_units(self) -> Iterator[UnitSeed]: ...
+    # `pages` restricts which units are produced. It is not an optimisation for
+    # its own sake: producing a unit means reading the page — geometry, object
+    # counts, layout, text — and on a 357-page issue that is the single largest
+    # cost in the run. The probe needs about sixty pages and each execution
+    # window needs its own range, so without this the whole document is profiled
+    # three times over (once by the probe, once per window) to answer questions
+    # about sixty and two hundred pages respectively.
+    #
+    # A session that ignores the argument stays correct and merely slow, which is
+    # the right default for third-party formats.
+
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]: ...
 
     def deep_signals(self, page_no: int) -> dict[str, Any]: ...
 
@@ -79,7 +90,7 @@ class BaseSession:
     def units(self) -> int:
         return self._units
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:  # pragma: no cover - overridden
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:  # pragma: no cover - overridden
         raise NotImplementedError
 
     def deep_signals(self, page_no: int) -> dict[str, Any]:

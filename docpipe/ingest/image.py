@@ -9,7 +9,7 @@ is content (a chart, a diagram, a scan) or decoration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Collection, Any, Iterator
 
 from docpipe.api.types import FormatContext, PageSignals, UnitSeed
 from docpipe.ingest.base import BaseSession
@@ -64,7 +64,9 @@ class ImageSession(BaseSession):
             "megapixels": round(width * height / 1e6, 2),
         }
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:
+        if pages is not None and 1 not in {int(page) for page in pages}:
+            return
         info = self.probe()
         signals = PageSignals(
             text_layer_chars=0,

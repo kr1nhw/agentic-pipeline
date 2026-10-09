@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Collection, Any, Iterator
 
 from docpipe.api.types import FormatContext, PageSignals, UnitSeed
 from docpipe.ingest.base import BaseSession
@@ -170,8 +170,11 @@ class TextSession(BaseSession):
             return [{"path": [], "heading": self.path.name, "text": self.text}]
         return self._chunk_plain()
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:
+        wanted = None if pages is None else {int(page) for page in pages}
         for index, unit in enumerate(self.units_data(), start=1):
+            if wanted is not None and index not in wanted:
+                continue
             text = self._unit_text(unit)
             signals = PageSignals(
                 text_layer_chars=len(text.strip()),

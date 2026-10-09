@@ -170,6 +170,11 @@ class PageRecord(BaseModel):
     attempt: int = 0
     duration_ms: int = 0
     errors: list[str] = Field(default_factory=list)
+    #: Expected outcomes that are not failures — a page left for review because
+    #: this run has no vision client, for instance. Kept out of `errors` on
+    #: purpose: a run that behaves exactly as configured must not report that
+    #: something went wrong, or the count stops meaning anything.
+    notes: list[str] = Field(default_factory=list)
     provenance: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
@@ -336,6 +341,8 @@ class DocReport(BaseModel):
     pipeline_id: str | None = None
     needs_review: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    #: Expected, non-failing outcomes (see PageRecord.notes).
+    notes: list[str] = Field(default_factory=list)
     duration_ms: int = 0
 
 

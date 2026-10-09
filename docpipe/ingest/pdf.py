@@ -402,13 +402,22 @@ class PdfSession(BaseSession):
             finally:
                 page.close()
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:
         """Stream page seeds, filling the text layer as we go.
 
         Nothing is rasterised here: the router decides from text, geometry and
         cheap structure whether a page deserves pixels at all.
+
+        `pages` limits the work to those page numbers. Profiling a page costs a
+        PDFium object walk, and a large document has to be read by the probe and
+        then again by every execution window; without a page filter the same
+        357-page issue is profiled three times to answer questions about sixty
+        pages and about two hundred.
         """
-        for page_no in range(1, self._units + 1):
+        wanted = None if pages is None else sorted({int(page) for page in pages})
+        for page_no in wanted if wanted is not None else range(1, self._units + 1):
+            if page_no < 1 or page_no > self._units:
+                continue
             try:
                 width, height = self.page_size(page_no)
                 text = self.page_text(page_no)
@@ -529,6 +538,13 @@ class PdfSession(BaseSession):
             report["unicode_ratio"] = round(mapped, 3)
             report["embedded_ratio"] = round(report["embedded"] / report["total"], 3)
             report["ocr_like"] = bool(mapped < 0.15)
+        # The cache guard at the top of this method read `self._font_report` and
+        # nothing ever assigned it, so every call ran `pdffonts` again: measured at
+        # 943 ms on a 1711-font document, called once per page through
+        # `page_layout`, which is roughly five minutes of subprocess on a 357-page
+        # issue and the largest single component of that run. The font table is a
+        # property of the FILE, so one call is enough.
+        self._font_report = report
         return report
 
     def page_layout(self, page_no: int) -> dict[str, Any]:

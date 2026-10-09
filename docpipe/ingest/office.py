@@ -18,7 +18,7 @@ rather than incidental:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Collection, Any, Iterator
 
 from docpipe.api.types import FormatContext, PageSignals, UnitSeed
 from docpipe.ingest.base import BaseSession
@@ -106,8 +106,11 @@ class PptxSession(BaseSession):
         height = float(presentation.slide_height or 0) / EMU_PER_POINT
         return round(width, 2), round(height, 2)
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:
-        for page_no in range(1, self._units + 1):
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:
+        wanted = None if pages is None else sorted({int(page) for page in pages})
+        for page_no in wanted if wanted is not None else range(1, self._units + 1):
+            if page_no < 1 or page_no > self._units:
+                continue
             shapes = self.slide_shapes(page_no)
             text = "\n".join(s["text"] for s in shapes if s["text"])
             width, height = self.slide_dimensions(page_no)
@@ -225,9 +228,25 @@ class DocxSession(BaseSession):
         body = self._document.element.body
         sections: list[dict[str, Any]] = []
         current: dict[str, Any] = {"heading": None, "paragraphs": [], "tables": [], "chars": 0}
-        #: Paragraph elements whose text this pass already accounted for. The
-        #: recovery sweep below reads everything *not* in here.
-        consumed: set[int] = set()
+        #: Paragraphs whose text this pass already accounted for, keyed by their
+        #: position in the tree. The recovery sweep below reads everything *not*
+        #: in here.
+        #:
+        #: Keyed by XPath and NOT by `id(element)`, which is what it was first:
+        #: lxml builds a new proxy object for an element on each access, so the
+        #: identity of the same paragraph changes between passes, and a freed
+        #: proxy's address can be reused by a different element. The effect was
+        #: content both duplicated (a paragraph read twice) and dropped (a
+        #: paragraph wrongly considered already read) — measured by the evaluator
+        #: as 9% text recall on a real Word file, on a reader whose own text layer
+        #: held every character.
+        consumed: set[str] = set()
+
+        def key(element: Any) -> str:
+            try:
+                return element.getroottree().getpath(element)
+            except Exception:  # noqa: BLE001 - a detached element has no path
+                return ""
 
         def flush() -> None:
             if current["paragraphs"] or current["tables"]:
@@ -246,7 +265,7 @@ class DocxSession(BaseSession):
                 if text:
                     current["paragraphs"].append({"text": text, "style": style})
                     current["chars"] += len(text)
-                    consumed.add(id(child))
+                    consumed.add(key(child))
                     if current["chars"] >= DOCX_SECTION_CHAR_CAP:
                         flush()
                         current = {"heading": current["heading"], "paragraphs": [], "tables": [], "chars": 0}
@@ -263,7 +282,7 @@ class DocxSession(BaseSession):
                     # read them a second time.
                     for inner in child.iter():
                         if inner.tag.rsplit("}", 1)[-1] == "p":
-                            consumed.add(id(inner))
+                            consumed.add(key(inner))
         flush()
 
         # ── coverage backstop ───────────────────────────────────────────────
@@ -278,7 +297,7 @@ class DocxSession(BaseSession):
         # Structure may be downgraded; content may not be dropped.
         recovered: list[str] = []
         for element in body.iter():
-            if element.tag.rsplit("}", 1)[-1] != "p" or id(element) in consumed:
+            if element.tag.rsplit("}", 1)[-1] != "p" or key(element) in consumed:
                 continue
             try:
                 text = Paragraph(element, self._document).text.strip()
@@ -310,8 +329,11 @@ class DocxSession(BaseSession):
             parts.append("\n".join(" | ".join(row) for row in table))
         return "\n".join(parts)
 
-    def enumerate_units(self) -> Iterator[UnitSeed]:
+    def enumerate_units(self, pages: Collection[int] | None = None) -> Iterator[UnitSeed]:
+        wanted = None if pages is None else {int(page) for page in pages}
         for index, section in enumerate(self.sections(), start=1):
+            if wanted is not None and index not in wanted:
+                continue
             text = self.section_text(index)
             signals = PageSignals(
                 text_layer_chars=len(text.strip()),
