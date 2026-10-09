@@ -93,6 +93,9 @@ def register_ops(api: PluginAPI) -> None:
             "min_cols": {"type": "integer", "default": 2, "min": 1, "max": 100},
             "header_rows": {"type": "integer", "default": 1, "min": 0, "max": 10},
             "max_empty_frac": {"type": "number", "default": 0.6, "min": 0.0, "max": 1.0},
+            # Above this many vector objects a page is a figure, and table
+            # detection is meaningless and ruinously slow. 0 disables the guard.
+            "max_vector_objects": {"type": "integer", "default": 20000, "min": 0},
         },
         cost_class="local",
         requires=("session",),

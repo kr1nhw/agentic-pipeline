@@ -75,6 +75,9 @@ class Config(BaseSettings):
     raster_cache_mb: int = 2048
     max_rss_mb: int = 0
     unit_timeout_s: float = 300.0
+    #: Wall-clock budget for a single deterministic operator call on one page.
+    #: Cost here is not predictable from cheap signals, so it is bounded instead.
+    op_time_budget_s: float = 6.0
     file_timeout_s: float = 3600.0
     max_file_size_gb: float = 4.0
     keep_rasters: bool = False

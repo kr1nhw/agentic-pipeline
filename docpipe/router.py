@@ -206,6 +206,25 @@ def route_document(
 
 
 def aggregate_signals(pages: list[PageRecord]) -> dict[str, Any]:
+    """Summarise a document's pages into routing signals.
+
+    An empty list is a legitimate input, not an error: a malformed file, an
+    encrypted document, or a format whose reader found nothing all enumerate zero
+    units. This used to index `pages[0]` unconditionally and took down the whole
+    run with an IndexError — found immediately on real harvested input, where
+    two of the Office files are deliberately-broken library test fixtures.
+    """
+    if not pages:
+        return {
+            "text_layer_chars": 0.0,
+            "image_area_frac": None,
+            "page_width": None,
+            "page_height": None,
+            "layout_hint": None,
+            "n_table_candidates": 0,
+            "units": 0,
+        }
+
     def median(values: list[float]) -> float | None:
         values = sorted(value for value in values if value is not None)
         if not values:

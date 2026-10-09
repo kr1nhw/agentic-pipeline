@@ -241,12 +241,49 @@ class Runner:
             self.log("format_without_session", path=str(path), format=spec.id)
             return None
 
-        session = session_factory(path, doc_id, self.config)
+        # Session construction is the first place a file can prove unreadable, and
+        # it fails with whatever the underlying library raises — PdfiumError,
+        # zipfile.BadZipFile, a struct error — none of which are DocpipeError. One
+        # unopenable file in a corpus of 30 must not end the run, so the whole
+        # opening step is guarded, not just the enumeration.
+        try:
+            session = session_factory(path, doc_id, self.config)
+        except Exception as exc:  # noqa: BLE001 - an unreadable file is a reportable fact
+            self.log("document_unreadable", path=str(path), error=f"{type(exc).__name__}: {exc}")
+            return DocumentJob(
+                path=path,
+                doc_id=doc_id,
+                format_id=spec.id,
+                kind=spec.kind,
+                session_factory=session_factory,
+                units=0,
+                decision=RouteDecision(None, 0.0, [], "document could not be opened"),
+                signals={},
+                errors=[f"could not be opened as {spec.id}: {type(exc).__name__}: {exc}"],
+            )
+
         try:
             units = session.units()
             signals, _ = self._probe(session, units)
         finally:
             session.close()
+
+        if units <= 0:
+            # Report it and move on. A file that enumerates nothing is a fact about
+            # the file (corrupt, encrypted, empty, or a format our reader cannot
+            # open), and one such file must not decide the fate of the corpus.
+            self.log("document_without_units", path=str(path), format=spec.id)
+            return DocumentJob(
+                path=path,
+                doc_id=doc_id,
+                format_id=spec.id,
+                kind=spec.kind,
+                session_factory=session_factory,
+                units=0,
+                decision=RouteDecision(None, 0.0, [], "document enumerated no units"),
+                signals=signals["aggregate"],
+                errors=[f"no units enumerated ({spec.id}): the file may be corrupt, encrypted or empty"],
+            )
 
         decision = route_document(
             self.registry.pipelines,
@@ -280,7 +317,13 @@ class Runner:
             step = max(1, units // PROBE_SAMPLE)
             limit = units
 
-        for seed in session.enumerate_units():
+        try:
+            enumerated = list(session.enumerate_units())
+        except Exception as exc:  # noqa: BLE001 - a reader that dies mid-document
+            self.log("enumerate_failed", doc_id=session.doc_id, error=f"{type(exc).__name__}: {exc}")
+            return {"pages": [], "aggregate": aggregate_signals([])}, []
+
+        for seed in enumerated:
             if seed.page_no % step != 0 and seed.page_no not in (1, units):
                 continue
             record = seed.to_record(session.doc_id)
@@ -334,6 +377,16 @@ class Runner:
 
     def _run_document(self, job: DocumentJob, page_stream: Any, block_stream: Any) -> DocReport:
         started = time.monotonic()
+        if job.units <= 0:
+            self.log("document_skipped", doc_id=job.doc_id, reason=(job.errors or ["no units"])[0])
+            return DocReport(
+                doc_id=job.doc_id,
+                source_path=str(job.path),
+                format=job.format_id,
+                units=0,
+                errors=list(job.errors) or ["no units enumerated"],
+                duration_ms=0,
+            )
         plan = self._plan_for(job)
         self.log(
             "document_start",

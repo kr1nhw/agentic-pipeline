@@ -18,6 +18,18 @@ from docpipe.api.types import BBox, Block, Cost, OpContext, OpResult, TablePaylo
 #: Rows that are entirely empty beyond this fraction mean the extraction failed.
 EMPTY_CELL_LIMIT = 0.6
 
+#: Above this many vector objects, a page is a figure rather than a table grid and
+#: table detection is both meaningless and ruinously slow.
+#:
+#: Measured on a harvested ACL paper: `find_tables` costs <=0.07s on every page up
+#: to 178 vectors, and 3.17s on the one page carrying 73,202 — a scatter plot drawn
+#: as thousands of marks, which pdfminer decomposes into one line object each. That
+#: single document took 149s for 16 pages, 3% of a 32-document corpus's entire
+#: runtime. Note that PDFium reports only 118 *page objects* for that page, so the
+#: explosion is invisible until pdfminer has parsed it — which is why the guard
+#: belongs here, next to the parse, and not in the cheap page profile.
+VECTOR_OBJECT_LIMIT = 20_000
+
 #: A table smaller than this is usually a layout artefact, not a table.
 MIN_TABLE_ROWS = 2
 MIN_TABLE_COLS = 2
@@ -57,6 +69,16 @@ def op_pdf_tables(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     # from vertical strokes that a width-and-thickness test does not recognise. A
     # heuristic that silently loses tables is far worse than one that occasionally
     # runs an operator for nothing, so the rule is now the one that cannot be wrong.
+    # Do not repeat a parse that has already been given up on.
+    if ctx.session is not None and hasattr(ctx.session, "pdfminer_timed_out"):
+        if ctx.session.pdfminer_timed_out(ctx.state.page_no):
+            return OpResult(
+                cost=Cost(duration_ms=timer.ms()),
+                signals={"tables_found": 0},
+                diagnostics=["table detection skipped: pdfminer already exceeded its budget on this page"],
+                metadata={"skipped": "pdfminer timeout"},
+            )
+
     if strategy == "lines" and ctx.session is not None and hasattr(ctx.session, "page_profile"):
         profile = ctx.session.page_profile(ctx.state.page_no)
         if profile.get("profiled") and profile.get("n_paths", 1) == 0:
@@ -73,10 +95,23 @@ def op_pdf_tables(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     else:
         settings = {}
 
+    object_limit = int(params.get("max_vector_objects", VECTOR_OBJECT_LIMIT))
     try:
         page = ctx.session.plumber_page(ctx.state.page_no) if hasattr(ctx.session, "plumber_page") else None
         if page is None:
             return OpResult(cost=Cost(duration_ms=timer.ms()))
+        if object_limit > 0:
+            vectors = len(page.lines) + len(page.rects) + len(getattr(page, "curves", []))
+            if vectors > object_limit:
+                return OpResult(
+                    cost=Cost(duration_ms=timer.ms()),
+                    signals={"tables_found": 0},
+                    diagnostics=[
+                        f"table detection skipped: {vectors} vector objects exceeds {object_limit} "
+                        "(a figure, not a table grid)"
+                    ],
+                    metadata={"skipped": f"{vectors} vector objects"},
+                )
         found = page.find_tables(settings) if settings else page.find_tables()
     except Exception as exc:  # noqa: BLE001 - a failed extraction is reported, not raised
         return OpResult(

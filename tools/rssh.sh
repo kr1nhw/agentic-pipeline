@@ -21,14 +21,27 @@ fi
 : "${DOCPIPE_SSH_PASSWORD:?DOCPIPE_SSH_PASSWORD is not set}"
 ssh_user="${DOCPIPE_SSH_USER:-root}"
 
-askpass="$(mktemp "${TMPDIR:-/tmp}/docpipe-askpass.XXXXXX")"
-chmod 700 "$askpass"
-cat > "$askpass" <<'ASKPASS'
-#!/bin/sh
-printf '%s\n' "$DOCPIPE_SSH_PASSWORD"
-ASKPASS
-cleanup() { rm -f "$askpass"; }
-trap cleanup EXIT INT TERM
+# The askpass helper lives beside the control sockets and PERSISTS.
+#
+# It used to be a per-invocation mktemp file removed by an EXIT trap, which broke
+# the retry path below: by the time the retry ran, the helper was gone and every
+# retry failed with "ssh_askpass: exec(...): No such file or directory" — turning
+# one flaky connection into a hard failure. A stable path also means the password
+# is written once per session rather than on every call.
+control_dir="${TMPDIR:-/tmp}/docpipe-ssh-$(id -u)"
+mkdir -p "$control_dir"
+chmod 700 "$control_dir"
+# Kept OUT of control_dir: the retry below clears that directory of stale sockets
+# and would delete the helper it needs, which turns a flaky connection into
+# "ssh_askpass: No such file or directory" and a hard failure.
+askpass_dir="${TMPDIR:-/tmp}/docpipe-askpass-$(id -u)"
+mkdir -p "$askpass_dir"
+chmod 700 "$askpass_dir"
+askpass="$askpass_dir/askpass.sh"
+if [ ! -x "$askpass" ]; then
+  printf '#!/bin/sh\nprintf "%%s\\n" "$DOCPIPE_SSH_PASSWORD"\n' > "$askpass"
+  chmod 700 "$askpass"
+fi
 
 export DOCPIPE_SSH_PASSWORD
 
@@ -39,10 +52,6 @@ export DOCPIPE_SSH_PASSWORD
 # fail2ban-style throttling. One authenticated master connection, reused by every
 # later command, removes the repeated authentication that triggers it. The socket
 # lives in the session temp directory, so it is not left behind on the host.
-control_dir="${TMPDIR:-/tmp}/docpipe-ssh-$(id -u)"
-mkdir -p "$control_dir"
-chmod 700 "$control_dir"
-
 # OpenSSH consults the askpass helper only when stdin is not a terminal. A pipe is
 # not a terminal, and `tar | rssh 'tar -xzf -'` depends on that stdin staying
 # connected, so only detach when a real terminal is attached.
@@ -85,7 +94,7 @@ fi
 # a socket whose peer is gone. Drop the sockets and try once more on a fresh
 # connection. A piped payload has already been consumed by the failed attempt, so
 # its retry fails loudly at the far end rather than succeeding with half a stream.
-rm -f "$control_dir"/* 2>/dev/null || true
+find "$control_dir" -maxdepth 1 -type s -delete 2>/dev/null || true
 echo "rssh: first attempt failed (exit $status); retrying on a fresh connection" >&2
 if [ -t 0 ]; then
   ssh "${ssh_opts[@]}" -o ControlMaster=no "$target" "$@" < /dev/null

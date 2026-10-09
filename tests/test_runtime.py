@@ -341,3 +341,42 @@ def test_report_is_json_serialisable(tmp_path: Path, registry: Registry) -> None
     payload = json.loads((config.out_dir / "report.json").read_text(encoding="utf-8"))
     assert payload["totals"]["documents"] == 1
     assert payload["docpipe_version"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Robustness on real-world input
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_aggregate_signals_survives_an_empty_document() -> None:
+    """A document with no units is a fact about the file, not a crash.
+
+    Found on the first corpus of harvested documents, which included two
+    deliberately-malformed Office fixtures: `pages[0]` raised IndexError and took
+    the whole run down, losing every document processed after it.
+    """
+    from docpipe.router import aggregate_signals
+
+    signals = aggregate_signals([])
+    assert signals["units"] == 0
+    assert signals["text_layer_chars"] == 0
+
+
+def test_a_file_with_no_units_is_reported_not_fatal(tmp_path: Path, registry: Registry) -> None:
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    # Claims to be a PDF, is not one; a reader finds no pages.
+    (corpus / "corrupt.pdf").write_bytes(b"%PDF-1.4\n" + b"\x00" * 512)
+    # A perfectly good document alongside it, to prove one bad file does not
+    # decide the fate of the corpus.
+    (corpus / "good.md").write_text("# Title\n\nBody text that should be extracted.\n", encoding="utf-8")
+
+    config = Config(in_dir=corpus, out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True, workers=1)
+    report = Runner(config, registry).run([corpus])
+
+    assert report.totals["documents"] == 2, "the good document must still be processed"
+    by_name = {Path(doc.source_path).name: doc for doc in report.docs}
+    assert by_name["good.md"].units >= 1
+    assert by_name["corrupt.pdf"].units == 0

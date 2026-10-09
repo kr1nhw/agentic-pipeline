@@ -99,6 +99,8 @@ class PdfSession(BaseSession):
         #: Cheap per-page facts, computed once and reused by the ops that ask.
         self._profiles: dict[int, dict[str, Any]] = {}
         self._layouts: dict[int, dict[str, Any]] = {}
+        #: Pages where pdfminer blew its wall-clock budget.
+        self._pdfminer_timeouts: set[int] = set()
         self._font_report: dict[str, Any] | None = None
         # Window cache: one pdftotext call covers many pages.
         self._text_window: tuple[int, int] | None = None
@@ -311,11 +313,29 @@ class PdfSession(BaseSession):
                 proc = subprocess.run(
                     [binary, str(self.path)], capture_output=True, timeout=60, check=False
                 )
-                for line in _decode(proc.stdout).splitlines()[2:]:
+                lines = _decode(proc.stdout).splitlines()
+                # Column positions come from the HEADER, never from fixed indices.
+                #
+                # pdffonts omits or inserts columns depending on the document: an
+                # `encoding` column appears when fonts differ in encoding, and a
+                # `prob` column only for some font types. Reading parts[2] as `emb`
+                # therefore read `encoding` instead, marking an ordinary LaTeX paper
+                # (`LKQPVO+CMR10 ... Builtin yes yes yes`) as unembedded and sending
+                # 15 of its pages to OCR. The header is the only reliable map.
+                columns: dict[str, int] = {}
+                if len(lines) >= 2:
+                    header = lines[0].split()
+                    for index, label in enumerate(header):
+                        columns.setdefault(label, index)
+                emb_at = columns.get("emb", 2)
+                uni_at = columns.get("uni", 4)
+                for line in lines[2:]:
                     parts = line.split()
-                    if len(parts) < 5:
+                    if len(parts) <= max(emb_at, uni_at):
                         continue
-                    name, font_type, embedded, subset, unicode_ok = parts[0], parts[1], parts[2], parts[3], parts[4]
+                    name, font_type = parts[0], (parts[1] if len(parts) > 1 else "?")
+                    embedded = parts[emb_at]
+                    unicode_ok = parts[uni_at]
                     report["total"] += 1
                     report["fonts"].append({"name": name[:40], "type": font_type, "embedded": embedded == "yes", "unicode": unicode_ok == "yes"})
                     if embedded == "yes":
@@ -326,27 +346,40 @@ class PdfSession(BaseSession):
                 pass
 
         if report["total"]:
-            # EMBEDDEDNESS is the discriminator; a missing ToUnicode map on its own
-            # means nothing.
+            # A document in which NO font carries a Unicode map has an OCR text
+            # layer. That is the whole rule, and it took four attempts to find:
             #
-            # The first version of this required both, and a second version weighted
-            # the unicode column -- both were wrong, and the corpus said so. The SQL
-            # standard (1428 pages) has 15 of 16 fonts EMBEDDED but almost no
-            # ToUnicode maps, and extracts flawlessly: "Datatypes / Table 2-4 (Cont.)
-            # / TIMEZONE_MINUTE ... 00 to 59." An embedded font carries its own
-            # glyph data and encoding, so pdffonts' uni column is not evidence of
-            # unreliability. Weighting it flagged all 1428 pages for OCR.
+            #   v1  required unembedded AND unmapped, graded by both
+            #   v2  graded by the unicode ratio      -> flagged the SQL standard,
+            #       whose 15-of-16 EMBEDDED fonts extract flawlessly
+            #   v3  graded by embeddedness alone     -> flagged Chucky and the
+            #       sigmod tutorial, born-digital, whose unembedded maths fonts
+            #       carry almost no text
+            #   v4  required BOTH ratios >= 60%      -> still flagged an arXiv
+            #       statistics paper at exactly 33/55 unmapped
             #
-            # An UNEMBEDDED font is different in kind: the characters are inferred
-            # from the font name at extraction time, which is exactly what corrupts
-            # the topology paper (emb=no, uni=no) and the 1980s survey.
-            unembedded = report["total"] - report["embedded"]
-            unmapped = report["total"] - report["unicode_mapped"]
-            report["ocr_like"] = bool(unembedded >= report["total"] * 0.6)
-            report["unicode_like"] = bool(unmapped >= report["total"] * 0.6)
+            # Plus a parsing bug underneath all of them: pdffonts inserts an
+            # `encoding` column and a `prob` column depending on the document, and
+            # reading fixed indices took `Builtin` for `emb` — which is what made
+            # a good LaTeX paper look unembedded. Columns now come from the header.
+            #
+            # Measured across seven documents whose right answer is known:
+            #   topology paper   uni  0/42 =  0%  -> OCR   (text is corrupted)
+            #   1980s survey     uni  0/12 =  0%  -> OCR   (text is corrupted)
+            #   arXiv stats      uni 22/55 = 40%  -> ok    (extracts correctly)
+            #   arXiv maths      uni 22/35 = 63%  -> ok
+            #   ACL paper        uni 38/42 = 90%  -> ok
+            #   SQL standard     uni 12/16 = 75%  -> ok    (extracts correctly)
+            #   Chucky           uni 34/54 = 63%  -> ok
+            #
+            # Embedding is deliberately not part of it: it looked like the obvious
+            # discriminator and it is wrong in both directions, because an embedded
+            # font can still lack a map and an unembedded one can still carry the
+            # text correctly.
+            mapped = report["unicode_mapped"] / report["total"]
+            report["unicode_ratio"] = round(mapped, 3)
             report["embedded_ratio"] = round(report["embedded"] / report["total"], 3)
-            report["unicode_ratio"] = round(report["unicode_mapped"] / report["total"], 3)
-        self._font_report = report
+            report["ocr_like"] = bool(mapped < 0.15)
         return report
 
     def page_layout(self, page_no: int) -> dict[str, Any]:
@@ -473,9 +506,24 @@ class PdfSession(BaseSession):
         #
         # The refinement that removes the guesswork is a CHARACTER-weighted ratio,
         # and the measurement to make first is which fonts actually carry the text.
-        if report.get("ocr_like") and report.get("unicode_like"):
+        if report.get("ocr_like"):
             return 0.2
         return 1.0
+
+    def mark_pdfminer_timeout(self, page_no: int) -> None:
+        """Record that pdfminer exceeded its budget on this page.
+
+        Abandoning the work is not the same as avoiding it. The abandoned thread
+        keeps running, and the next operator that needs the same parsed page pays
+        for it again — measured, that made a slow document *slower* (139s -> 276s)
+        because headings gave up and tables immediately re-attempted the identical
+        parse. So the timeout is recorded, and every later pdfminer-dependent
+        operator on that page declines rather than repeating it.
+        """
+        self._pdfminer_timeouts.add(page_no)
+
+    def pdfminer_timed_out(self, page_no: int) -> bool:
+        return page_no in self._pdfminer_timeouts
 
     def page_objects(self, page_no: int) -> dict[str, int]:
         """Count the objects the source page actually contains.

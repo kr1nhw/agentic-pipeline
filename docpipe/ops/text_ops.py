@@ -411,6 +411,18 @@ def op_pdf_font_heading_map(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     # correct needs the run separation in `docpipe.ingest.pdf` finished, not
     # another threshold. Exposed so that work is measurable rather than blind.
     backend = str(params.get("backend", "pdfminer"))
+
+    # A wall-clock budget, because cost here is not predictable from anything
+    # cheap. Measured on a harvested ACL paper: one page carries a scatter plot of
+    # ~73,000 decomposed vector objects and pdfminer needs 8.7 s/page on that
+    # document against 0.1 s/page on a comparable paper. PDFium's own object count
+    # (118 paths, 750 segments) does not predict it, and neither does a ruling-line
+    # count — the explosion only appears once pdfminer has parsed the page.
+    #
+    # So the page is allowed a bounded amount of time and no more. Exceeding it is
+    # not a failure: it is evidence that this page needs a different route, and the
+    # gate escalates it to the vision path rather than the run stalling on it.
+    budget_s = float(params.get("time_budget_s", getattr(ctx.config, "op_time_budget_s", 6.0)))
     try:
         if backend == "pdfium" and hasattr(ctx.session, "page_lines"):
             lines = ctx.session.page_lines(ctx.state.page_no)
@@ -419,7 +431,23 @@ def op_pdf_font_heading_map(ctx: OpContext, params: dict[str, Any]) -> OpResult:
             page = ctx.session.plumber_page(ctx.state.page_no) if hasattr(ctx.session, "plumber_page") else None
             if page is None:
                 return OpResult()
-            lines = _group_chars_into_lines(page.chars)
+            lines = _with_deadline(
+                lambda: _group_chars_into_lines(page.chars),
+                budget_s,
+                op="pdf_font_heading_map",
+                page_id=ctx.state.page_id,
+            )
+            if lines is None:
+                if hasattr(ctx.session, "mark_pdfminer_timeout"):
+                    ctx.session.mark_pdfminer_timeout(ctx.state.page_no)
+                return OpResult(
+                    cost=Cost(duration_ms=timer.ms()),
+                    diagnostics=[
+                        f"heading detection exceeded its {budget_s:.0f}s budget on this page; "
+                        "the page needs a different route"
+                    ],
+                    metadata={"timeout": True, "budget_s": budget_s},
+                )
     except Exception as exc:  # noqa: BLE001 - typography is an enhancement, not a requirement
         return OpResult(diagnostics=[f"font analysis failed: {type(exc).__name__}: {exc}"])
 
@@ -529,3 +557,44 @@ def _modal(values: list[float]) -> float:
         key = round(value, 1)
         counts[key] = counts.get(key, 0) + 1
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+#: Timeouts already spent, per document, so one pathological document cannot leak
+#: unbounded worker threads.
+_TIMEOUTS: dict[str, int] = {}
+TIMEOUTS_PER_DOCUMENT = 8
+
+
+def _with_deadline(work: Any, seconds: float, *, op: str, page_id: str) -> Any | None:
+    """Run `work` with a wall-clock deadline; return None if it is exceeded.
+
+    Python cannot kill a thread, so the abandoned call keeps running until it
+    finishes. That is a deliberate, bounded trade: the alternative is a corpus run
+    that stalls for minutes on one page, and the leaked work is capped per
+    document. When the cap is reached the deadline is not offered again — the
+    document has declared itself pathological and the remaining pages go straight
+    to the route the gate chooses.
+    """
+    if seconds <= 0:
+        return work()
+    document = page_id.split(":", 1)[0]
+    if _TIMEOUTS.get(document, 0) >= TIMEOUTS_PER_DOCUMENT:
+        return None
+    import concurrent.futures
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"deadline-{op}")
+    future = pool.submit(work)
+    try:
+        return future.result(timeout=seconds)
+    except concurrent.futures.TimeoutError:
+        _TIMEOUTS[document] = _TIMEOUTS.get(document, 0) + 1
+        return None
+    except Exception:  # noqa: BLE001 - a failed op is reported by the caller
+        raise
+    finally:
+        # `wait=False` is the entire point. Using the executor as a context manager
+        # calls shutdown(wait=True), which blocks until the abandoned call finishes
+        # — so the deadline expired, the timeout was recorded, and the run waited
+        # for the very work it had just given up on. Measured: no improvement at
+        # all (138.22s vs 138.94s) until this became explicit.
+        pool.shutdown(wait=False)
+

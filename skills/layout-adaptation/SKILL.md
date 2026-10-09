@@ -59,7 +59,7 @@ disagree — but you should disagree with a reason the evidence supports.
 
 ## Why `trust` exists, and why it is the signal people miss
 
-A born-digital PDF embeds subset fonts with a ToUnicode map: extraction is a
+A born-digital PDF embeds subset fonts with a Unicode map: extraction is a
 dictionary lookup, and the characters are exactly the author's. An OCR'd scan
 references a system font by name with no map, so extraction *guesses* the
 character from the glyph and the font name.
@@ -76,15 +76,35 @@ its text layer renders:
 | `R[1] ∪ R[2] ∪ ⋯` | `R tl] U R ~1 U R [31` |
 | `for n ≥ 2` | `for n i> 2` |
 
-Nothing in the text signals a problem. The fonts do:
+Nothing in the text signals a problem. The fonts do. **`trust` is low when no font
+in the document carries a Unicode map** — that is the whole rule:
 
 ```
-pdffonts scan.pdf   -> TimesNewRoman  TrueType  no no no
+pdffonts scan.pdf   -> TimesNewRoman  TrueType  no no no      # no map anywhere
 pdffonts paper.pdf  -> RKVWCA+LinLibertineTI  Type 1  yes yes yes
 ```
 
-So when `trust` is low, **do not repair the layer — replace its source.** Send the
-page image and ask for a transcription. On the paper above that recovers
+Four richer versions of this rule were tried and every one was wrong on a real
+document, so do not "improve" it without re-measuring on all of these:
+
+| version | rule | what it broke |
+| --- | --- | --- |
+| v1 | unembedded **and** unmapped | borderline documents flickered |
+| v2 | graded by the Unicode ratio | flagged the 1428-page SQL standard, whose 15-of-16 **embedded** fonts extract perfectly |
+| v3 | graded by embeddedness | flagged Chucky and the sigmod tutorial — born-digital, many unembedded maths fonts carrying little text |
+| v4 | both ratios ≥ 60% | still flagged an arXiv statistics paper sitting at exactly 33/55 unmapped |
+| **v5** | **no font maps → distrust** | correct on all seven calibration documents |
+
+Embedding is deliberately *not* part of it. It looks like the obvious
+discriminator and it is wrong in both directions: an embedded font can lack a map,
+and an unembedded one can carry the text correctly. There was also a parsing bug
+underneath all four: `pdffonts` inserts an `encoding` column and a `prob` column
+depending on the document, so fixed column indices read `Builtin` as `emb` — which
+is what made an ordinary LaTeX paper look unembedded. **Parse that table by its
+header, never by position.**
+
+When `trust` is low, **do not repair the layer — replace its source.** Send the
+page image and ask for a transcription. On the topology paper that recovers
 `R ⊂ X × Y`, `τ(R)`, `R[n−1] for n ≥ 2` and every symbol, and the model corrects
 `~'(R)` back to `τ(R)` because it understands the mathematics rather than the
 glyphs.
@@ -124,6 +144,16 @@ Write the `reason` from the probe output. A plan whose reasons do not match the
 evidence is how a pipeline drifts.
 
 ## Cost discipline
+
+Two costs matter and only one of them is tokens. Wall-clock is the other, and a
+single page can dominate a corpus: one harvested ACL paper carried a scatter plot
+drawn as **73,202 vector objects**, which pdfminer decomposes into one line object
+each, and `find_tables` spent **3.17 s** on it against ≤0.07 s on every other page.
+Sixteen pages of that document cost 149 s — 3% of a 32-document corpus's entire
+runtime. Table detection is therefore skipped above `max_vector_objects` (default
+20 000): past that count a page is a figure, not a table grid, and the guard pays
+for itself many times over. Note PDFium reports only 118 page objects for that
+same page, so the explosion is invisible until pdfminer has parsed it.
 
 Escalation is per page and bounded, and the gate already fires only where the
 deterministic path provably failed. Two more rules:
