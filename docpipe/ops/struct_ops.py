@@ -171,6 +171,37 @@ def op_pdf_tables(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     )
 
 
+def table_rows_accepted(
+    rows: list[list[str]],
+    *,
+    min_rows: int = MIN_TABLE_ROWS,
+    min_cols: int = MIN_TABLE_COLS,
+    max_empty: float = EMPTY_CELL_LIMIT,
+) -> tuple[bool, str]:
+    """Is this a table, or a rectangle the detector mistook for one?
+
+    pdfplumber's line strategy returns every region bounded by rules, which
+    includes single-row boxes, two-cell brackets and mostly-empty frames. The
+    operator has always filtered those out; the evaluator did not, so it counted
+    them as tables the pipeline had lost — 68 pages in the harvested corpus
+    carried a `table_missing` flag for a table that no reader would call a table.
+
+    The acceptance rule lives here, and the evaluator imports it, so "expected"
+    and "extracted" mean the same thing on both sides of the measurement.
+    """
+    cleaned = [row for row in rows if any(cell for cell in row)]
+    if len(cleaned) < min_rows:
+        return False, f"only {len(cleaned)} non-empty row(s)"
+    n_cols = max((len(row) for row in cleaned), default=0)
+    if n_cols < min_cols:
+        return False, f"only {n_cols} column(s)"
+    cells = [cell for row in cleaned for cell in row]
+    empty = sum(1 for cell in cells if not cell)
+    if cells and empty / len(cells) > max_empty:
+        return False, f"{empty}/{len(cells)} cells empty"
+    return True, ""
+
+
 def _table_to_text(rows: list[list[str]]) -> str:
     return "\n".join(" | ".join(cell for cell in row) for row in rows)
 

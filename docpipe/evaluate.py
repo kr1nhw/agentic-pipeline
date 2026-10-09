@@ -158,16 +158,39 @@ def source_facts(session: Any, page_no: int, kind: str) -> dict[str, int]:
 
 
 def expected_tables(session: Any, page_no: int, kind: str) -> int:
-    """Tables the source suggests, using the same detection the run would use."""
-    if kind == "pdf_page" and hasattr(session, "plumber_page"):
-        try:
-            page = session.plumber_page(page_no)
-            if page is None:
-                return 0
-            return len(page.find_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"}))
-        except Exception:  # noqa: BLE001
+    """Tables the source suggests, on the same terms the run extracts them.
+
+    Detection alone is not the expectation. pdfplumber's line strategy returns
+    every rule-bounded region, including single-row boxes and empty frames, and
+    the operator rejects those on purpose — so an evaluator that counts raw
+    detections reports content loss for tables the pipeline was right not to emit.
+    Measured on the harvested corpus: 68 pages flagged `table_missing`, of which
+    five carried a table block at all. It now applies the operator's own
+    acceptance rule, imported rather than restated, so the two cannot drift.
+    """
+    if kind != "pdf_page" or not hasattr(session, "plumber_page"):
+        return 0
+    from docpipe.ops.struct_ops import table_rows_accepted
+
+    try:
+        page = session.plumber_page(page_no)
+        if page is None:
             return 0
-    return 0
+        found = page.find_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
+        count = 0
+        for table in found:
+            extracted = table.extract() or []
+            rows = [
+                ["" if cell is None else str(cell).strip() for cell in (row or [])]
+                for row in extracted
+                if row is not None
+            ]
+            accepted, _ = table_rows_accepted(rows)
+            if accepted:
+                count += 1
+        return count
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def evaluate_page(

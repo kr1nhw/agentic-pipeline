@@ -855,3 +855,28 @@ def test_no_pdfium_call_is_made_outside_the_lock() -> None:
         checked += 1
         assert checker.main(str(module)) == 0, f"unlocked PDFium access in {module}"
     assert checked >= 1, "the checker found no module that uses PDFium, which cannot be right"
+
+
+def test_evaluator_and_operator_agree_on_what_a_table_is() -> None:
+    """Detection is not the expectation; acceptance is.
+
+    The evaluator counted every rule-bounded region pdfplumber returns, while the
+    operator rejects single-row boxes and mostly-empty frames. On the harvested
+    corpus that produced 68 `table_missing` flags for tables the pipeline was
+    right not to emit — a measurement error that reads as content loss, and the
+    kind that wastes a day chasing a defect that does not exist.
+    """
+    from docpipe.ops.struct_ops import table_rows_accepted
+
+    # A real table.
+    assert table_rows_accepted([["Year", "Value"], ["2024", "17"], ["2025", "23"]])[0] is True
+    # A single-row box the line strategy returns for any header band.
+    assert table_rows_accepted([["Section 1"]])[0] is False
+    # A 2x2 grid with content in every cell is a small table, and is accepted.
+    assert table_rows_accepted([["A", "B"], ["C", "D"]])[0] is True
+    # One column is a list, not a table.
+    assert table_rows_accepted([["A"], ["B"], ["C"]])[0] is False
+    # A frame that is mostly empty is a rectangle.
+    assert table_rows_accepted([["a", "", "", ""], ["", "", "", ""]])[0] is False
+    # Rows with no content at all are not rows.
+    assert table_rows_accepted([[""], ["  "]])[0] is False
