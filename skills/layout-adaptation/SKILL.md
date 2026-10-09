@@ -313,6 +313,28 @@ and empty frames, so 68 pages were reported as losing a table that no reader wou
 call a table. Detection is not expectation, and both sides now call
 `table_rows_accepted`.
 
+## What a "lost text" flag can hide
+
+A page-level recall comparison counts every removed duplicate as loss, and the
+pipeline removes duplicates on purpose: a line that repeats on every page — an
+RFC's header, a journal's running title — is kept once and dropped elsewhere.
+39 pages of a harvested corpus were flagged `text_lost` for exactly that.
+
+Token-by-token, of the 571 tokens those pages lost: **560 were present elsewhere in
+the same document** and 11 numeric literals were gone. The flag was 98 % noise, and
+the 11 real tokens were invisible inside it. So:
+
+- **Ask whether the document still has it, not whether the page does.** A token the
+  document keeps elsewhere is not lost; a reader of the document still has it.
+- **Report both numbers.** `recall_split` returns recall and the deduplicated count,
+  and the flag says which it is. A transformation and a defect must not share a
+  column.
+- **Report document-level recall beside the per-page average.** A document is read
+  as a whole; the per-page figure is a debugging aid.
+
+The same discipline applies to any metric that judges output against input: state
+what transformation the pipeline performs on purpose, and measure the rest.
+
 ## When the evidence is new
 
 If a page's signals match no archetype — a form, a musical score, a handwritten

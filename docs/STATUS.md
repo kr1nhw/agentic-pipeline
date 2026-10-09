@@ -84,6 +84,44 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 8 — the "lost text" was repetition, and probing ran ahead of reading
+
+**The 39 pages flagged `text_lost` were not losing text.** Measuring what was
+missing from them, token by token:
+
+| quantity | value |
+| --- | --- |
+| tokens missing from the 39 flagged pages | 571 |
+| present elsewhere in the same document | **560 (98.1 %)** |
+| absent from the document entirely | **11** — numeric literals |
+
+The dominant pattern was an RFC's page header (`rfc 8446 tls august 2018`), removed
+because it repeats on every page while the first occurrence is kept. A deliberate
+transformation was sharing a column with a real defect, and the 11 tokens that were
+genuinely gone were invisible inside the count. `recall_split` now separates them,
+recall credits a token the document keeps elsewhere, and document-level recall is
+reported beside the per-page averages.
+
+| on the full corpus | before this round | after |
+| --- | --- | --- |
+| text recall | 99.8 % | **100.0 %** |
+| pages flagged | 85 | **46** |
+| `text_lost` | 39 | **0** |
+| score | 0.987 | **0.991** |
+
+**Probing ran ahead of reading.** Preparing a document means probing it, and that
+ran for all 103 documents of the new harvest before any page was extracted: about
+eight minutes of silence, with every probed document held in memory. Measured on a
+163 MiB, 12-document corpus, time to first output:
+
+| | in the first 100 s |
+| --- | --- |
+| prepare-all-then-extract | **nothing started** |
+| interleaved | **first document finished** |
+
+Sharding keeps the up-front pass, because it partitions (document, window) pairs
+across processes and needs the whole list.
+
 ### Corpus round 7 — the full corpus completes, and two measures were wrong
 
 | quantity | value |
@@ -391,16 +429,17 @@ same pages.
 
 ## Open findings
 
-- **Thirty-one pages report `table_missing`** — a table the evaluator can see in
-  the source that produced no table block. Unchanged by this round's work (32
-  before), and the largest remaining content-quality gap.
+- **Forty-one pages report `table_missing`** — a table the evaluator can see in
+  the source that produced no table block — down from 104 before the evaluator
+  applied the operator's own acceptance rule, and the largest remaining
+  content-quality gap. The weakest documents are ACL papers at 58-75 % table
+  survival: their tables are set with rules the line strategy finds, and the
+  extraction still misses them.
 - **Office pictures are linked, not read.** The evaluator's `image_unaccounted`
   flags on decks are correct by design: a figure block that points at a file has
   not been read. The vision path is the remedy, and offline runs leave them for
   review. What this round fixed is that the bytes were missing entirely for slides
   holding more than one picture.
-- **`text_lost` on 39 pages** survives this round's fixes; it is the next
-  content-quality item after the tables.
 - **Forms report partial table survival.** `f1040` and `f1120` are grids of boxes and the
   evaluator expects the grid, but most of a form's cells are empty by design and
   the acceptance rule rejects tables that are more than 60 % empty. Whether a form
