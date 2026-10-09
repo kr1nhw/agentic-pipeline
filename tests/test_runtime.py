@@ -1103,6 +1103,73 @@ def test_replacing_a_pages_text_keeps_its_tables() -> None:
     assert orders == sorted(orders)
 
 
+def test_replacing_a_pages_text_keeps_its_tables() -> None:
+    """`replace_blocks` supersedes the prose, not the page.
+
+    The column escalation re-reads a multi-column page in reading order and sets
+    `replace_blocks`, which cleared EVERY block on the page — so the tables, figures
+    and captions the plan had already extracted were discarded by the operator that
+    fixed the reading order. The pages that take that path are exactly the pages
+    whose plan had found tables.
+
+    Measured on the harvested corpus: 41 pages reported `table_missing`, every one
+    of them on a page whose route was `adapted`, and on those pages the table
+    operator had recorded `tables_found: 1`. Content never extracted is a coverage
+    gap; content extracted and then thrown away is a bug.
+    """
+    from docpipe.api.types import Block, OpResult, PageState
+    from docpipe.schema import PageRecord, TablePayload
+
+    record = PageRecord(doc_id="doc", page_no=1, page_id="doc:p1", kind="pdf_page")
+    state = PageState(record=record)
+
+    def block(block_id: str, kind: str, text: str) -> Block:
+        return Block(
+            block_id=block_id,
+            page_id="doc:p1",
+            order=0,
+            type=kind,  # type: ignore[arg-type]
+            text=text,
+            source_op="test",
+        )
+
+    # What the plan produced first: prose, then a ruled table.
+    state.merge(OpResult(blocks=[block("a", "paragraph", "body text")]), "pdf_text_layer")
+    state.merge(
+        OpResult(
+            blocks=[
+                Block(
+                    block_id="t",
+                    page_id="doc:p1",
+                    order=0,
+                    type="table",
+                    text="Year | Value",
+                    table=TablePayload(rows=[["Year", "Value"], ["2024", "17"]], n_cols=2),
+                    source_op="pdf_tables",
+                )
+            ]
+        ),
+        "pdf_tables",
+    )
+    assert {item.type for item in record.blocks} == {"paragraph", "table"}
+
+    # The escalation re-reads the page in column order and replaces its text.
+    state.merge(OpResult(blocks=[block("b", "paragraph", "left column")], replace_blocks=True), "pdf_columns_text")
+
+    kinds = [item.type for item in record.blocks]
+    texts = [item.text for item in record.blocks]
+    assert "table" in kinds, f"the column pass discarded the table: {kinds} {texts}"
+    assert "body text" not in texts, "the superseded prose must still be replaced"
+    assert "left column" in texts
+    # Orders stay unique, so assembly has a defined sequence. They need not start
+    # at zero: the surviving table keeps the place it had and the new prose follows
+    # it, and the plan's ordering operator — re-run after this rung — is what puts
+    # the page back into reading order.
+    orders = [item.order for item in record.blocks]
+    assert len(set(orders)) == len(orders), f"duplicate orders: {orders}"
+    assert orders == sorted(orders)
+
+
 def test_parallel_evaluation_matches_sequential(tmp_path: Path, registry: Registry) -> None:
     """Evaluating documents in parallel must change the clock, not the numbers.
 
@@ -1135,3 +1202,34 @@ def test_parallel_evaluation_matches_sequential(tmp_path: Path, registry: Regist
     assert sequential["totals"]["pages"] == parallel["totals"]["pages"]
     assert sequential["totals"]["score"] == parallel["totals"]["score"]
     assert [doc["doc_id"] for doc in sequential["documents"]] == [doc["doc_id"] for doc in parallel["documents"]]
+
+
+def test_table_expectations_honour_the_operators_guards() -> None:
+    """A check the pipeline declines by design must not be scored as a failure.
+
+    The evaluator asked pdfplumber for tables on EVERY page, including the pages the
+    operator refuses to look at — no vector paths, pdfminer already over budget, or
+    more vector objects than the operator will walk. That cost the most on exactly
+    those pages, which carry tens of thousands of objects, and it reported a defect
+    where the pipeline had made a cost decision. On the documents that carried the
+    last two `table_missing` flags, both were pages the operator had declined.
+    """
+    from docpipe.evaluate import table_check_skipped
+
+    class Session:
+        def __init__(self, profile, timed_out=False):
+            self._profile = profile
+            self._timed_out = timed_out
+
+        def pdfminer_timed_out(self, page_no):
+            return self._timed_out
+
+        def page_profile(self, page_no):
+            return self._profile
+
+    # A page with no vector paths cannot hold a ruled table.
+    assert table_check_skipped(Session({"profiled": True, "n_paths": 0}), 1)
+    # A page whose parse already gave up.
+    assert table_check_skipped(Session({"profiled": True, "n_paths": 40}, timed_out=True), 1)
+    # A page with paths and no timeout is checked as normal.
+    assert table_check_skipped(Session({"profiled": True, "n_paths": 40}), 1) == ""

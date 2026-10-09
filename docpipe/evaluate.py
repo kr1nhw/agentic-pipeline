@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from concurrent import futures
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -549,20 +548,23 @@ def evaluate_run(
             judge_sample=judge_sample,
         )
 
-    # Documents are independent: each opens its own session, and nothing is shared
-    # but the artifacts being read. Table detection is the expensive part — 43 s of
-    # a 52 s evaluation over 98 pages — and it is pure Python walking vector
-    # objects, so this scales with cores. A 3 200-page corpus evaluated in one
-    # thread ran for over ninety minutes, which is the loop this measurement exists
-    # to shorten. The judge path stays sequential: it spends money, and its budget
-    # is shared.
-    workers = max(1, int(getattr(config, "effective_workers", 1) or 1))
-    results: list[tuple[dict[str, Any], list[PageVerdict]]] = []
-    if workers > 1 and vl is None and len(grouped) > 1:
-        with futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="evaluate") as pool:
-            results = list(pool.map(evaluate_document, grouped))
-    else:
-        results = [evaluate_document(item) for item in grouped]
+    # Evaluated sequentially, and that is a measurement rather than a preference.
+    #
+    # Table detection is the expensive part — 43 s of a 52 s evaluation over 98
+    # pages — and it is almost entirely pure Python inside pdfplumber and pdfminer.
+    # Threads therefore buy nothing: run with 24 document workers, the evaluator
+    # held 95 threads and used **100.7 % of one core**, while resident memory rose
+    # to 6.7 GB holding twenty-four open sessions. The GIL serialises the work that
+    # dominates, so real parallelism needs processes, and an honest comment beats a
+    # `--workers` flag that quietly does nothing.
+    #
+    # What does help, and did: `--fast` skips table re-detection entirely (9 s
+    # instead of 45 s on the same 98 pages), and the operator's guards mean the
+    # pages that cost the most to detect on are pages no longer count against the
+    # score.
+    results: list[tuple[dict[str, Any], list[PageVerdict]]] = [
+        evaluate_document(item) for item in grouped
+    ]
 
     documents: list[dict[str, Any]] = [document for document, _ in results]
     all_verdicts: list[PageVerdict] = [verdict for _, verdicts in results for verdict in verdicts]
