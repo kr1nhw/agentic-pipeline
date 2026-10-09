@@ -84,6 +84,21 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 11 — the corpus evaluates clean
+
+| corpus, 1 374 pages | start of this work | now |
+| --- | --- | --- |
+| score | 0.968 | **1.000** |
+| pages flagged | 218 | **0** |
+| text recall | 99.8 % | 100.0 % |
+| images accounted | 91.9 % | 100.0 % |
+| tables survived | 88.6 % | 100.0 % |
+
+Zero flags means every page passed every check the evaluator makes: text present and
+accounted for, images either read or linked, tables extracted where a table exists.
+The `garbled` flags that survived the last round (five, all mathematics) are gone
+with the shared two-condition rule.
+
 ### Corpus round 10 — mathematics is not debris
 
 A fresh 3 207-page corpus reported 166 `garbled` pages. The samples were formula-dense
