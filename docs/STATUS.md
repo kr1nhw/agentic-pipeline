@@ -84,6 +84,60 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 9 — the escalated pages were throwing their tables away
+
+Every `table_missing` flag in the corpus turned out to have the same cause, and it
+was not the table extractor. The column escalation re-reads a page in reading order
+and sets `replace_blocks`, which cleared **every** block on the page — so the
+operator that fixed the reading order also discarded the tables, figures and
+captions the plan had already extracted. The pages that take that path are exactly
+the pages whose plan had found tables.
+
+The flags did not show it; the signals did: on p15 page 32 the run recorded
+`tables_found: 1` while the evaluator recorded `output_tables: 0`, and all 41
+flagged pages had route `adapted`.
+
+`replace_blocks` now supersedes the prose — paragraph, heading, list — and leaves
+structured and visual blocks in place, and the column rung re-runs the plan's
+ordering operator afterwards (found by what it produces, `reading_order`, not by
+its name).
+
+| on the documents that carried the flags | before | after |
+| --- | --- | --- |
+| p15.pdf | 80 % | **100 %** |
+| 2021.naacl-main.1.pdf | 60 % | **100 %** |
+| 2021.naacl-main.3.pdf | 75 % | **100 %** |
+| four documents together, score | 0.880 | **0.994** |
+
+The corpus's review count moved 10 → 20, and that is the trade working: sparse
+tables (50–56 % empty cells) now survive the escalation and the gate flags those
+pages for a person, where before the table was deleted and the page passed.
+
+**Evaluation cost.** Table re-detection is 43 s of a 52 s evaluation over 98 pages,
+and it ran on every page — including the pages the operator declines by design,
+which are the ones with tens of thousands of vector objects. Applying the
+operator's own guards took an evaluation of 102 documents and 3 207 pages from
+**over 90 minutes (killed, unfinished) to 33 minutes**, and removed the last two
+`table_missing` flags, which were pages the operator had declined: they are now
+reported as "table expectation not established" rather than as loss.
+
+Threads were tried for it and do not work: 24 document workers gave 95 threads,
+**100.7 % of one core** and 6.7 GB resident, because table detection is pure Python
+inside pdfplumber and the GIL serialises it. That is reverted, with the measurement
+left where the loop lives, and `--fast` (9 s instead of 45 s on the same pages) is
+the option that shortens an evaluation.
+
+### Fresh harvest, judged end to end
+
+| quantity | value |
+| --- | --- |
+| documents / pages | **100 / 3 207** |
+| text recall | **100.0 %** |
+| images accounted | 99.6 % |
+| tables survived | **97.9 %** |
+| score | **0.987** |
+| flags | 166 `garbled`, 69 `table_missing`, 12 `image_unaccounted`, 9 `text_lost` |
+
 ### Corpus round 8, part two — a fresh harvest, judged by the corrected evaluator
 
 103 documents / 238.8 MiB harvested in one pass across 16 archetypes (24 two-column
@@ -466,7 +520,12 @@ same pages.
 
 ## Open findings
 
-- **Forty-one pages report `table_missing`** — a table the evaluator can see in
+- **166 pages of the fresh harvest report `garbled`** (5 %), concentrated in the
+  formula-heavy arXiv papers. The pipeline's trust rule uses the same word-shape
+  measure, so this may also be driving the 48 `needs_review` pages — it is the next
+  thing to measure, and the question is the same one that has been asked twice
+  already: is the text debris, or is the measure reading mathematics as debris?
+- **Sixty-nine pages report `table_missing`** — a table the evaluator can see in
   the source that produced no table block — down from 104 before the evaluator
   applied the operator's own acceptance rule, and the largest remaining
   content-quality gap. The weakest documents are ACL papers at 58-75 % table
