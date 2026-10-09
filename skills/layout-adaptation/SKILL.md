@@ -307,6 +307,37 @@ page of axis labels must be judged on its words. And a word may contain a hyphen
 apostrophe or an underscore — `place_of_birth` is a word, and calling it debris
 flags every identifier on a technical page.
 
+### A measure with a precondition must carry it
+
+Word shape is not a verdict on its own, and the third round in a row turned on
+that. A fresh 3 207-page corpus reported 166 `garbled` pages; the samples were
+formula-dense mathematics — `σij,ts`, `(eit ejs ) = OP (1)`. Those are not words,
+and a measure that asks for words says they are debris. The document this flag
+exists to catch scored **0.41**, inside the 0.14–0.56 range those pages occupy, so
+no threshold separates them.
+
+Two pieces of evidence do, and the reader had always required both:
+
+| document | unicode ratio | word shape | verdict |
+| --- | --- | --- | --- |
+| 1950s scan, glyphs guessed from names | 0.00 | **0.41** | debris |
+| 1982 survey | 0.00 | 0.96 | text |
+| Congressional Record | 0.00 | 0.95 | text |
+| formula-dense arXiv papers | 0.77 | 0.14–0.56 | text |
+
+The evaluator applied half the rule. `textstats.layer_looks_misdecoded` is now the
+only expression of it, called by both. Two rules follow:
+
+- **When a measure has a precondition, pass it or do not convict.** An evaluator
+  that cannot establish the precondition has no evidence, and "no evidence" is not
+  suspicion. The evaluator takes the font ratio from the session and defaults it to
+  "mapped" when unavailable.
+- **Before changing a threshold, check whether the measure is the wrong one.** Three
+  rounds have now been spent on measurements that were wrong in both directions:
+  tables counted by detection rather than acceptance, text called lost because a
+  duplicate was removed, and mathematics called debris. In each case the pipeline's
+  extraction was right and the number describing it was not.
+
 The same discipline applies to table expectations: the evaluator counted every
 rule-bounded region pdfplumber returns while the operator rejected single-row boxes
 and empty frames, so 68 pages were reported as losing a table that no reader would
