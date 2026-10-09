@@ -84,6 +84,41 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 10 — mathematics is not debris
+
+A fresh 3 207-page corpus reported 166 `garbled` pages. The samples were formula-dense
+papers: `σij,ts`, `(eit ejs ) = OP (1)`, `W1 = (H 0⊤ )−1 λi (1)λ⊤ 0 −1 i (1)(H ) = OP (1)`.
+Those are not words, and a measure that asks for words calls them debris — but the
+document that flag exists to catch scored **0.41**, inside the 0.14–0.56 range those
+pages occupy, so no threshold on word shape separates notation from debris.
+
+Font metadata does, which is why the reader has always required both:
+
+| document | unicode ratio | word shape | verdict |
+| --- | --- | --- | --- |
+| 1950s scan, layer guessed from glyph names | 0.00 | **0.41** | debris |
+| 1982 survey | 0.00 | 0.96 | text |
+| Congressional Record | 0.00 | 0.95 | text |
+| formula-dense arXiv papers | 0.77 | 0.14–0.56 | text |
+
+The evaluator applied word shape on its own. `textstats.layer_looks_misdecoded` is
+now the single expression of the decision, called by the reader and the evaluator
+alike, and the evaluator takes the font ratio from the session — treating an
+unavailable signal as *no evidence* rather than as doubt. Replacement characters
+remain a flag on their own: a decoding failure with no ambiguity.
+
+| the three papers carrying 106 of the 166 flags | before | after |
+| --- | --- | --- |
+| flags | 106 | **0** |
+| score (209 pages) | 0.85–0.90 | **1.000** |
+
+**The gate was never affected.** No page of the fresh corpus is in review for a
+text-shape reason, so this was a measurement defect and not a cost one: the pipeline
+had been reading those papers correctly the whole time, and only the number
+describing them was wrong. It is the third round in a row where that was true —
+tables counted by detection rather than acceptance, text called lost because a
+duplicate was removed, and now mathematics called debris.
+
 ### Corpus round 9 — the escalated pages were throwing their tables away
 
 Every `table_missing` flag in the corpus turned out to have the same cause, and it
