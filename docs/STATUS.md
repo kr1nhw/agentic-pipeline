@@ -109,6 +109,18 @@ its name).
 | 2021.naacl-main.3.pdf | 75 % | **100 %** |
 | four documents together, score | 0.880 | **0.994** |
 
+Re-run over the whole corpus, 1 374 pages:
+
+| full corpus | before this round | after |
+| --- | --- | --- |
+| text recall | 100.0 % | 100.0 % |
+| images accounted | 100.0 % | 100.0 % |
+| tables survived | 97.0 % | **100.0 %** |
+| pages flagged | 46 | **5** |
+| score | 0.991 | **1.000** |
+
+The five remaining flags are all `garbled`, all on mathematics papers (0.976–0.999).
+
 The corpus's review count moved 10 → 20, and that is the trade working: sparse
 tables (50–56 % empty cells) now survive the escalation and the gate flags those
 pages for a person, where before the table was deleted and the page passed.
