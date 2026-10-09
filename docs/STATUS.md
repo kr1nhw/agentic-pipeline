@@ -84,6 +84,29 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 8, part two — a fresh harvest, judged by the corrected evaluator
+
+103 documents / 238.8 MiB harvested in one pass across 16 archetypes (24 two-column
+papers, 16 table-heavy, 8 formula-heavy, 8 figure-led, 6 ASCII-diagram RFCs, 8 real
+decks, 8 real Word files, forms, statutes, a 300-page register). The largest 37 of
+them — every document over ~1 MiB, none of them previously seen — were run and
+evaluated end to end:
+
+| quantity | value |
+| --- | --- |
+| documents / pages | 37 / **1 107** |
+| text recall | **100.0 %** |
+| images accounted | **100.0 %** |
+| tables survived | **96.8 %** |
+| score | **0.990** |
+| flags | 36 — every one `table_missing`, no `garbled`, no `text_lost` |
+
+Two of those zeros are this round's work: the garbling measure and the text-loss
+measure now report what they claim to. The remaining gap is tables, and it is
+consistent across corpora — ACL and EMNLP two-column papers sit at 60–88 % table
+survival because their tables are set with rules the line strategy finds and the
+extraction still misses.
+
 ### Corpus round 8 — the "lost text" was repetition, and probing ran ahead of reading
 
 **The 39 pages flagged `text_lost` were not losing text.** Measuring what was
