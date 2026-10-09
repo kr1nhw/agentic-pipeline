@@ -28,6 +28,14 @@ script="$1"
 shift || true
 [[ -f "$script" ]] || { echo "no such script: $script" >&2; exit 2; }
 
+# Quote every argument: document names contain spaces, and an unquoted path is
+# split by the remote shell into separate arguments, which surfaces as the script
+# failing to parse its own second word ("invalid literal for int(): 'Optimization'").
+args=""
+for value in "$@"; do
+  args="$args $(printf '%q' "$value")"
+done
+
 name="$(basename "$script")"
 tar -czf - -C "$(dirname "$script")" "$name" | "$HERE/rssh.sh" \
   "mkdir -p $REMOTE_ROOT/tmp && tar -xzf - -C $REMOTE_ROOT/tmp && chmod 755 $REMOTE_ROOT/tmp && chmod 644 $REMOTE_ROOT/tmp/* && echo uploaded >&2"
@@ -42,7 +50,7 @@ if [[ "$mode" == "docker" ]]; then
   "$HERE/rssh.sh" "docker run --rm --user 0 --entrypoint python3 \
     -v $REMOTE_ROOT/tmp/$name:/tmp/$name:ro \
     -v $REMOTE_ROOT:$REMOTE_ROOT:ro -w $REMOTE_ROOT \
-    $IMAGE /tmp/$name $*"
+    $IMAGE /tmp/$name$args"
 else
-  "$HERE/rssh.sh" "cd $REMOTE_ROOT && python3 $REMOTE_ROOT/tmp/$name $*"
+  "$HERE/rssh.sh" "cd $REMOTE_ROOT && python3 $REMOTE_ROOT/tmp/$name$args"
 fi

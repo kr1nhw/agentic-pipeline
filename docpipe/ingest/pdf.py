@@ -49,6 +49,51 @@ def _pdftotext() -> str | None:
     return shutil.which("pdftotext")
 
 
+#: Fraction of tokens that must look like words before a page's text is believed.
+#:
+#: Measured, not guessed. On the four documents whose text layer is unembedded and
+#: carries no unicode maps — the only group the font metadata cannot clear:
+#:
+#:   topology paper   (1950s scan)  word shape 0.47   text GARBLED, unusable
+#:   1982 survey                    word shape 0.92   text correct, rare substitutions
+#:   Congressional Record           word shape 0.93   text correct
+#:   Federal Register               word shape 0.77   text correct
+#:
+#: The threshold sits between the one document that must be refused and the three
+#: that must not, and the margin is wide enough to be a rule rather than a fit.
+WORD_SHAPE_FLOOR = 0.60
+
+_WORD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_WORD_EDGE = ".,;:!?()[]{}<>\"'`/*_+=|\\"
+
+
+def text_word_shape(text: str) -> float:
+    """Fraction of whitespace-separated tokens that are made of letters.
+
+    This is the second opinion on a text layer. Font metadata can only say how
+    the characters *should* have been decoded: a font with no ToUnicode CMap and
+    no standard encoding might have produced the text by guessing from glyph
+    names. The text itself says whether that guess landed. Prose is built of
+    letter-only tokens; a layer decoded from glyph names is built of fragments
+    like ``~'(R)``, ``R tl]`` and ``U{Ry``, which are letters padded with the
+    symbols whose glyph names happened to be nearby.
+
+    Deliberately language-neutral: it asks for the shape of a word, not for a
+    dictionary, so a page in a language this was never tested on is not punished
+    for it. A page with fewer than twenty tokens returns 1.0 — too little
+    evidence to convict, and the font metadata on its own is not enough.
+    """
+    tokens = [token for token in text.split() if any(ch.isalnum() for ch in token)]
+    if len(tokens) < 20:
+        return 1.0
+    good = 0
+    for token in tokens:
+        core = token.strip(_WORD_EDGE)
+        if len(core) >= 2 and all(ch in _WORD_CHARS or ch in "-'" for ch in core):
+            good += 1
+    return good / len(tokens)
+
+
 def _decode(data: bytes) -> str:
     for encoding in ("utf-8", "utf-16", "latin-1"):
         try:
@@ -379,6 +424,11 @@ class PdfSession(BaseSession):
             layout = self.page_layout(page_no)
             signals.columns = layout.get("columns", 1)
             signals.text_layer_trust = layout.get("trust", 1.0)
+            # The measurement behind a distrust decision travels with the signal,
+            # so the gate can report the evidence instead of restating a rule.
+            shape = self.font_report().get("word_shape")
+            if shape is not None:
+                signals.word_shape = shape
             yield UnitSeed(page_no=page_no, kind="pdf_page", signals=signals, text_layer=text)
 
     # ── text-layer trust and page layout ────────────────────────────────────
@@ -571,15 +621,30 @@ class PdfSession(BaseSession):
         # maps — which is the signature of a scan put through an OCR tool:
         #
         #   topology paper   emb 0/42, uni 0/42    -> distrust  (confirmed by eye)
-        #   1980s survey     emb 0/12, uni 0/12    -> distrust  (confirmed by eye)
         #   SQL standard     emb 15/16, uni ~0/16  -> trust
         #   LaTeX paper      emb 20/54, uni 34/54  -> trust
         #   slide tutorial   emb 60/249, uni 189/249 -> trust
         #
-        # The refinement that removes the guesswork is a CHARACTER-weighted ratio,
-        # and the measurement to make first is which fonts actually carry the text.
+        # The 1980s survey was in that list as a second distrust case, and the
+        # corpus round of 2024 showed the entry was wrong: its text reads
+        # `M. Jarke and J. Koch ... network DBMSs [Dayal and Goodman 1982]`, with
+        # an occasional substituted letter, and refusing it sent a readable
+        # document down the vision path. The same round produced the Congressional
+        # Record: 329 unembedded fonts, none with a unicode map, and text that
+        # extracts perfectly, because a font carrying a STANDARD encoding
+        # (WinAnsi) has a byte-to-character table that needs no CMap at all.
+        #
+        # So font metadata is a PROPOSAL, not a verdict. It says the characters
+        # might have been inferred; the text says whether the inference landed.
+        # Prose is made of words, and a layer decoded from glyph names is not.
         if report.get("ocr_like"):
-            return 0.2
+            shape = text_word_shape(self.page_text(page_no))
+            report["word_shape"] = round(shape, 3)
+            if shape < WORD_SHAPE_FLOOR:
+                return 0.2
+            # The fonts cannot vouch for the layer and the text does. The text
+            # wins: it is the thing being judged.
+            report["ocr_like_text_confirmed"] = False
         return 1.0
 
     def mark_pdfminer_timeout(self, page_no: int) -> None:

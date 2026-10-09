@@ -134,6 +134,9 @@ class PageSignals(BaseModel):
     text_sample: str | None = None
     #: Estimated column count. 1 for prose, 2+ when a gutter was measured.
     columns: int = 1
+    #: Fraction of tokens that read as words, computed only when the fonts cast
+    #: doubt on the layer. Absent means the fonts vouched for it.
+    word_shape: float | None = None
     #: How much the text layer can be believed, 0..1. Low means it is an OCR
     #: layer: present, plausible, and wrong about characters.
     text_layer_trust: float = 1.0

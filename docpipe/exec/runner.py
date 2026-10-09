@@ -334,12 +334,22 @@ class Runner:
         return {"pages": pages, "aggregate": aggregate_signals(pages)}, pages
 
     def _document_record(self, job: DocumentJob) -> DocumentRecord:
-        stat = job.path.stat()
+        # A file can disappear between being accepted and being read: an input
+        # directory that is emptied, a share that goes away. `stat` then raises,
+        # and this is called once per unit, deep inside the run — so an unguarded
+        # stat turns a vanished file into an exception that ends the whole run
+        # and loses every document after it. Size is metadata; its absence is
+        # not a reason to stop.
+        try:
+            stat = job.path.stat()
+            size = stat.st_size
+        except OSError:
+            size = 0
         return DocumentRecord(
             doc_id=job.doc_id,
             source_path=str(job.path),
             format=job.format_id,
-            bytes=stat.st_size,
+            bytes=size,
             sha256=job.doc_id,
             units=job.units,
             kind=job.kind,
@@ -405,8 +415,14 @@ class Runner:
         outcomes: list[UnitOutcome] = []
         workers = max(1, self.config.effective_workers)
         if workers == 1 or len(windows) == 1:
+            # The same isolation the pooled path gets below. Without it a window
+            # that raises ends the run: a file that vanished mid-document took
+            # down an 80-page run at page 40 and lost the whole corpus behind it.
             for start, end in windows:
-                outcomes.extend(self._run_window(job, plan, start, end))
+                try:
+                    outcomes.extend(self._run_window(job, plan, start, end))
+                except Exception as exc:  # noqa: BLE001 - one bad window is not the run
+                    self.log("window_failed", doc_id=job.doc_id, start=start, end=end, error=str(exc))
         else:
             with futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="docpipe") as pool:
                 pending = {

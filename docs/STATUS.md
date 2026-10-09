@@ -82,27 +82,53 @@ counted a figure block *pointing at* an image as the image being extracted, and
 reported 100% image accounting for a deck whose slides were empty. The judge
 reported "提取结果为空" — extraction is empty — on the same pages.
 
-## Measured cost (corpus round 1)
+## Measured cost
+
+### Corpus round 4 — the deterministic pass pays for almost everything
 
 | quantity | value |
 | --- | --- |
-| corpus | 32 documents / 571 pages harvested from arXiv, ACL, RFC Editor and library fixtures |
-| offline run | 484 static · 62 dynamic · 25 flagged · **0 vision calls, 0 tokens** |
-| pages wanting vision | **25 of 571 = 4.4 %** |
-| per escalated page | **1,806 prompt + 2,096 completion tokens**, `reasoning_tokens: 0` |
-| focused keyed run | 3 documents / 14 pages → 11 calls, 19,861 + 23,062 tokens, **0 gate failures, 0 review** |
-| evaluator | score 0.988 · text recall 99.5 % · images 100 % · tables 100 % |
-| harness session | 540 model requests · 834 K input + 559 K output = **1.39 M tokens** · 579 tool calls |
+| corpus | 32 documents / 571 pages (arXiv, ACL, RFC, library fixtures, synthetic scans) |
+| vision calls | **1** — down from 25 pages that wanted vision in round 1 |
+| tokens **billed by the pipeline** | 1,990 prompt + 1,402 completion = **3,392** |
+| routes | 339 static · **167 adapted** · 62 dynamic · 3 needs_review |
+| escalations resolved without a model | **167 units** |
+| documents still needing review | 3 (2 pathological Office fixtures, 1 chunker artifact — both since fixed) |
 
-The largest saving in this round came from *not* escalating: an intermediate
-version of the text-layer trust rule would have sent 1428 pages of the SQL
-standard to OCR, and another 15 pages of a healthy arXiv paper.
+The 167 `adapted` units are the round's result. In round 1 those pages failed
+their first plan, were sent to the model, and cost ~1,800 + 2,100 tokens each —
+roughly 650 K tokens for the corpus. They are now repaired by a deterministic
+operator: a column-aware text pass for multi-column pages, a text-layer-free
+path for pages whose text cannot be trusted. The model is reached only when no
+deterministic operator can fix the page, which in this corpus happened once.
+
+`adapted` is a new route label, and it exists because the old one lied: every
+page that climbed the escalation ladder was reported as `vl_assisted`, including
+pages that never touched a model. A run that spent nothing on a page still
+reported it as vision-assisted, which hides exactly the saving worth measuring.
+A model-produced answer replayed from cache keeps the `vl_assisted` label and is
+counted separately in `vl_cache_hits`, because "no spend" and "no model" are
+different facts.
+
+### Earlier rounds, for comparison
+
+| quantity | value |
+| --- | --- |
+| corpus round 1, offline | 484 static · 62 dynamic · 25 flagged · **0 vision calls** |
+| per escalated page | **1,806 prompt + 2,096 completion tokens**, `reasoning_tokens: 0` |
+| round 2 focused keyed run | 3 documents / 14 pages → 11 calls, 19,861 + 23,062 tokens |
+| evaluator (round 2) | score 0.988 · text recall 99.5 % · images 100 % · tables 100 % |
+| harness session, all rounds | 1,411 model requests · **2.55 M input + 1.36 M output** tokens · 742 tool calls · ~27 h wall clock over 9 turns |
+
+The largest saving so far came from *not* escalating: an intermediate version of
+the text-layer trust rule would have sent 1428 pages of the SQL standard to OCR,
+and another 15 pages of a healthy arXiv paper.
 
 ## Not verified
 
-- **No agent session has ever started in the image.** See the blocker below. The
-  headless profile is broken in this container, and it is the one part of the
-  product that has never run.
+- **The agent session in the image runs only with `--security-opt seccomp=unconfined`.** It boots, lists four skills and resolves the vision model, but plain
+  `docker run` on this docker 18.09 host fails at `statx` (see *The agent
+  blocker* below, which is solved but not portable).
 - **The 1428-page SQL standard was not run in the image.** It is the reason the
   PDFium lock exists, and its memory profile is the reason for the streaming gap
   below.
@@ -167,16 +193,19 @@ None of this affects the extraction runtime, which does not need the harness.
 | `test -w` used to probe writability | warned on every container start about directories that worked — overlayfs makes `access(2)` lie here |
 | `daft` declared a hard dependency but used nowhere | 56 MB re-downloaded on every build, and a stalled download cost ~40 minutes |
 | `-e DEEPSEEK_API_KEY="$KEY"` inside a single-quoted remote command | expanded on the wrong host; the key never reached the container |
+| Every escalated page was labelled `vl_assisted`, including pages a deterministic operator fixed | the report claimed model spend for pages that cost nothing, hiding the saving the escalation ladder produces |
+| A DOCX table whose cells exist but whose rows do not | python-docx reports zero rows, the row-driven reader collected nothing, so fifteen characters of text reached no block while the gate reported a table "detected but none extracted" |
+| A text chunk holding only the tail newline of a split file | `rfc8446.txt` grew a 57th unit of one character; the gate read it as an unreadable page and sent a healthy document to review |
+| The corpus fetcher trusted the HTTP status and the `.pdf` extension | govinfo answers a wrong package id with **200 and an HTML placeholder**, so three document-shaped HTML pages entered the corpus as PDFs; downloads are now checked against magic bytes |
+| `--skip` re-runs overwrote `corpus-manifest.jsonl` | harvesting one source discarded the provenance of every other, leaving a manifest that looked complete |
+| `Accept-Encoding: gzip` sent to the SEC, which urllib does not decode | EDGAR's JSON arrived as gzip bytes and every filing failed with a decode error |
 
 ## Next three actions
 
-1. **Fix the container's agent bootstrap** (inotify limits first). Everything else
-   about the agent — preset, settings, four skills, pnpm — is in the image and
-   verified present.
-2. **Stream the writers.** `_run_document` holds a whole document in memory before
+1. **Stream the writers.** `_run_document` holds a whole document in memory before
    writing. That is the blocker for multi-GB inputs and for the 1428-page
    standard, and it is the single highest-value change left.
-3. **Exercise the planner.** Point `--plans-from` at a hand-written plan for a
+2. **Exercise the planner.** Point `--plans-from` at a hand-written plan for a
    document no archetype matches, so the dynamic path has coverage rather than
    just a test suite.
 

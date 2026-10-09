@@ -114,9 +114,14 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
         # The layer is still an OCR layer, but nothing is being read from it any
         # more: the content came from the page image. Distrusting it again would
         # mark every successfully transcribed page for review.
+        shape = (getattr(signals, "model_extra", None) or {}).get("word_shape")
+        detail = (
+            "unembedded fonts without unicode maps mean characters are inferred, not read"
+            if shape is None
+            else f"the fonts carry no unicode map and the text reads as fragments, not words (word shape {shape:.2f})"
+        )
         reasons.append(
-            f"text layer cannot be trusted (trust {trust:.2f} < {trust_floor}): unembedded fonts "
-            "without unicode maps mean characters are inferred, not read"
+            f"text layer cannot be trusted (trust {trust:.2f} < {trust_floor}): {detail}"
         )
 
     # 6. Column structure. A flat text layer preserves lines but not columns, so on

@@ -76,16 +76,53 @@ its text layer renders:
 | `R[1] ∪ R[2] ∪ ⋯` | `R tl] U R ~1 U R [31` |
 | `for n ≥ 2` | `for n i> 2` |
 
-Nothing in the text signals a problem. The fonts do. **`trust` is low when no font
-in the document carries a Unicode map** — that is the whole rule:
+Nothing in the text signals a problem. The fonts do. **v5: `trust` is low when no
+font in the document carries a Unicode map** — `pdffonts` two ways:
 
 ```
 pdffonts scan.pdf   -> TimesNewRoman  TrueType  no no no      # no map anywhere
 pdffonts paper.pdf  -> RKVWCA+LinLibertineTI  Type 1  yes yes yes
 ```
 
-Four richer versions of this rule were tried and every one was wrong on a real
-document, so do not "improve" it without re-measuring on all of these:
+But font metadata is a **proposal, not a verdict**, and the corpus round of 2024
+proved it in both directions on documents whose text was checked by eye:
+
+| document | fonts | text |
+| --- | --- | --- |
+| Congressional Record | 329, **none** embedded, **none** with a map, 86 % `WinAnsi` | **perfect** — `118 th CONGRESS, SECOND SESSION … The House met at 6:30 p.m.` |
+| 1982 ACM survey | 12, none embedded, none with a map | **correct**, rare substituted letter (`GONTENTS`) |
+| Federal Register | 1711, none embedded, none with a map, 82 % `WinAnsi` | **correct** |
+| 1950s topology paper | system font, no map | **garbled** — the table above |
+
+A font with a *standard* encoding (`WinAnsi`, `MacRoman`, `Standard`) has a
+byte-to-character table that needs no CMap at all. So v5's rule alone would send
+**51 pages of the Congressional Record and every page of a 300-page Federal
+Register to vision** — hundreds of thousands of tokens to fix text that was never
+broken.
+
+**v6, current: the metadata proposes and the text decides.** Fonts without maps
+raise the question; the page's own text answers it, by word shape:
+
+```
+trust = 0.2  only if  (no unicode maps)  AND  (word shape < 0.60)
+```
+
+Word shape is the fraction of whitespace-separated tokens made of letters. Prose
+is built of words; a layer decoded from glyph names is built of `~'(R)`, `R tl]`,
+`U{Ry`. Measured on the four documents the font signal cannot clear:
+
+| document | word shape | verdict |
+| --- | --- | --- |
+| topology paper | **0.47** | refuse — text unusable |
+| Federal Register | 0.77 | trust |
+| 1982 survey | 0.92 | trust |
+| Congressional Record | 0.93 | trust |
+
+It is deliberately language-neutral — it asks for the shape of a word, not for a
+dictionary entry — and a page with fewer than twenty tokens is not convicted on
+this evidence at all.
+
+Version history, because every earlier version was wrong on a real document:
 
 | version | rule | what it broke |
 | --- | --- | --- |
@@ -93,17 +130,26 @@ document, so do not "improve" it without re-measuring on all of these:
 | v2 | graded by the Unicode ratio | flagged the 1428-page SQL standard, whose 15-of-16 **embedded** fonts extract perfectly |
 | v3 | graded by embeddedness | flagged Chucky and the sigmod tutorial — born-digital, many unembedded maths fonts carrying little text |
 | v4 | both ratios ≥ 60% | still flagged an arXiv statistics paper sitting at exactly 33/55 unmapped |
-| **v5** | **no font maps → distrust** | correct on all seven calibration documents |
+| v5 | no font maps → distrust | correct on seven calibration documents, and wrong on the whole GPO family (below) |
+| **v6** | **no maps AND word shape < 0.60** | correct on every document measured so far |
 
-Embedding is deliberately *not* part of it. It looks like the obvious
+Embedding is deliberately *not* part of the rule. It looks like the obvious
 discriminator and it is wrong in both directions: an embedded font can lack a map,
-and an unembedded one can carry the text correctly. There was also a parsing bug
-underneath all four: `pdffonts` inserts an `encoding` column and a `prob` column
-depending on the document, so fixed column indices read `Builtin` as `emb` — which
-is what made an ordinary LaTeX paper look unembedded. **Parse that table by its
-header, never by position.**
+and an unembedded one can carry the text correctly.
 
-When `trust` is low, **do not repair the layer — replace its source.** Send the
+Two parsing traps sit under all of this, and both were live in the shipped code:
+
+1. `pdffonts` inserts an `encoding` column and a `prob` column depending on the
+   document, so fixed column indices read `Builtin` as `emb`.
+2. **The `type` column contains a space** (`Type 1C`, `Type 0`). Splitting a row on
+   whitespace shifts every field to its right by one — so `emb` reads the encoding
+   and `uni` reads the subset flag. Parsing by *header position* does not fix this
+   either, because the header has no such space; only **character offsets** do.
+
+**Parse that table by character offsets from the header, never by token index.**
+
+When `trust` is low *and the text confirms it*, **do not repair the layer —
+replace its source.** Send the
 page image and ask for a transcription. On the topology paper that recovers
 `R ⊂ X × Y`, `τ(R)`, `R[n−1] for n ≥ 2` and every symbol, and the model corrects
 `~'(R)` back to `τ(R)` because it understands the mathematics rather than the

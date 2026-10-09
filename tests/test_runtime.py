@@ -494,3 +494,86 @@ def test_a_trailing_whitespace_chunk_is_not_a_unit(tmp_path: Path) -> None:
     session = TextSession(path, "doc", config, tmp_path / "work")
     for seed in session.enumerate_units():
         assert seed.text_layer.strip(), f"unit at page {seed.page_no} was created from whitespace alone"
+
+
+def test_word_shape_separates_a_garbled_layer_from_a_readable_one() -> None:
+    """The second opinion that keeps a readable document off the vision path.
+
+    Font metadata cannot clear the Congressional Record: 329 fonts, every one
+    unembedded and without a unicode map, and text that extracts perfectly,
+    because a font with a standard encoding needs no CMap. Nor can it convict the
+    1982 survey, whose text reads correctly with the occasional substituted
+    letter. The font signal proposes distrust; the text decides.
+
+    Both samples are real, taken from the corpus documents that produced the rule.
+    """
+    from docpipe.ingest.pdf import WORD_SHAPE_FLOOR, text_word_shape
+
+    garbled = (
+        "~'(R) R tl] U{Ry x ySI y E Y 1t 1S 1n 1t 1S 1n ~'(R) R tl] U{Ry x ySI y E Y "
+        "1t 1S 1n 1t 1S 1n ~'(R) R tl] U{Ry x ySI y E Y 1t 1S 1n 1t 1S 1n ~'(R) R tl]"
+    )
+    readable = (
+        "Congressional Record 118 th CONGRESS, SECOND SESSION United States of America "
+        "PROCEEDINGS AND DEBATES OF THE Vol. 170 WASHINGTON, TUESDAY, JANUARY 9, 2024 "
+        "No. 4 House of Representatives The House met at 6:30 p.m. and was called to order"
+    )
+    survey = (
+        "M. Jarke and J. Koch GONTENTS 1982a] and extendable to the implementa- tion of "
+        "network DBMSs [Dayal and Goodman 1982]. Moreover, many popular query languages, "
+        "such as SQL [Astrahan and Chamberlin 1975] or QUEL [Stonebraker et al. 1976]"
+    )
+
+    assert text_word_shape(garbled) < WORD_SHAPE_FLOOR, "a garbled layer must be convicted"
+    assert text_word_shape(readable) >= WORD_SHAPE_FLOOR, "readable text must not be refused"
+    assert text_word_shape(survey) >= WORD_SHAPE_FLOOR, "the 1982 survey must not be refused"
+
+
+def test_a_page_with_too_little_text_is_not_convicted() -> None:
+    """Two words are not evidence of a garbled layer."""
+    from docpipe.ingest.pdf import text_word_shape
+
+    assert text_word_shape("") == 1.0
+    assert text_word_shape("SIGNED SEALED") == 1.0
+
+
+def test_a_file_that_vanishes_mid_document_does_not_end_the_run(tmp_path: Path) -> None:
+    """One lost input is one lost document, not a lost corpus.
+
+    The sequential path had no guard around a window while the pooled path did,
+    so a document that fit in a single window had a different failure behaviour
+    from one that did not: a missing input raised out of the run. Found by
+    deleting a staged file underneath a running container, which reported
+    `FileNotFoundError: /in/CREC-2024-01-10.pdf` from a `stat` inside per-unit
+    setup and exited 1 with 40 of 80 pages unread.
+    """
+    from docpipe.exec.runner import DocumentJob, Runner
+    from docpipe.router import RouteDecision
+
+    path = tmp_path / "vanishing.pdf"
+    path.write_bytes(b"%PDF-1.4\n" + b"x" * 64)
+
+    class Config2:
+        out_dir = tmp_path / "out"
+        work_dir = tmp_path / "work"
+        offline = True
+
+    job = DocumentJob(
+        path=path,
+        doc_id="doc",
+        format_id="pdf",
+        kind="pdf_page",
+        session_factory=None,
+        units=1,
+        decision=RouteDecision(None, 0.0, [], "test"),
+        signals={},
+        errors=[],
+    )
+    (tmp_path / "out").mkdir(exist_ok=True)
+    (tmp_path / "work").mkdir(exist_ok=True)
+    runner = Runner.__new__(Runner)
+    runner.config = Config2()
+    # The file is gone by the time the record is built.
+    path.unlink()
+    record = Runner._document_record(runner, job)
+    assert record.bytes == 0, "a vanished file must not raise out of the run"
