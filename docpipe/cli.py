@@ -4,6 +4,7 @@
 Commands are deliberately few and each one does one thing:
 
     docpipe run        extract content from files (the product)
+    docpipe evaluate   judge a finished run: what the source had, what the output kept
     docpipe probe      report what the router sees, without extracting
     docpipe ops        the operator registry, including the generated markdown
     docpipe pipelines  the static catalog
@@ -235,6 +236,55 @@ def cmd_pipelines(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    """Judge a finished run: what was in the source, what came out, what was lost."""
+    from docpipe.agent.vl import Budget, VLClient
+    from docpipe.evaluate import evaluate_run, summarize, write_evaluation
+
+    config = _config_from_args(args)
+    registry = build_registry(plugin_paths=config.plugin_paths)
+    out_dir = Path(args.out)
+    # Evaluation renders pages to judge them, so it needs a writable scratch
+    # directory. Defaulting to the container's /work is wrong for anyone running
+    # this against a run they fetched locally: the judge then fails with
+    # "Operation not permitted: '/work'" and reports "unknown" for every page,
+    # which looks like a model problem rather than a path problem. The run's own
+    # directory is always writable, because the run just wrote there.
+    if args.work in (None, os.environ.get("DOCPIPE_WORK", "/work")):
+        scratch = out_dir / ".eval-work"
+        scratch.mkdir(parents=True, exist_ok=True)
+        config.work_dir = scratch
+        config.out_dir = out_dir
+
+    vl = None
+    if args.judge_sample > 0 and not args.offline:
+        vl = VLClient(config, budget=Budget(config), log=_structured_log)
+        if not vl.configured:
+            print("no DEEPSEEK_API_KEY: evaluating with metrics only", file=sys.stderr)
+            vl = None
+
+    try:
+        evaluation = evaluate_run(
+            out_dir,
+            registry,
+            config,
+            check_tables=not args.fast,
+            vl=vl,
+            judge_sample=args.judge_sample,
+        )
+    finally:
+        if vl is not None:
+            vl.close()
+
+    target = write_evaluation(out_dir, evaluation)
+    print(summarize(evaluation))
+    print(f"\nwrote {target}", file=sys.stderr)
+    totals = evaluation["totals"]
+    # Exit non-zero when the extraction is visibly incomplete, so this is usable
+    # as a gate in a pipeline rather than only as a report.
+    return 1 if totals.get("pages_with_flags") else 0
+
+
 def cmd_plugin(args: argparse.Namespace) -> int:
     from docpipe.builtins import validate_catalog
 
@@ -366,6 +416,24 @@ def build_parser() -> argparse.ArgumentParser:
     pipelines.add_argument("action", choices=["list", "show", "validate"], nargs="?", default="list")
     pipelines.add_argument("id", nargs="?", default=None)
 
+    evaluate = sub.add_parser("evaluate", help="judge a finished run for lost or wrong content")
+    evaluate.add_argument("--out", required=True, help="the run's output directory")
+    evaluate.add_argument(
+        "--work",
+        default=None,
+        help="scratch directory for page rasters (default: <out>/.eval-work)",
+    )
+    evaluate.add_argument("--plugin", action="append", default=None)
+    evaluate.add_argument(
+        "--judge-sample",
+        dest="judge_sample",
+        type=int,
+        default=0,
+        help="pages to put in front of the vision model (0 = metrics only)",
+    )
+    evaluate.add_argument("--fast", action="store_true", help="skip table re-detection")
+    evaluate.add_argument("--offline", action="store_true")
+
     plugin = sub.add_parser("plugin", help="inspect or validate extensions")
     plugin.add_argument("action", choices=["list", "lint"], nargs="?", default="list")
     plugin.add_argument("target", nargs="?", default=None)
@@ -386,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe": cmd_probe,
         "ops": cmd_ops,
         "pipelines": cmd_pipelines,
+        "evaluate": cmd_evaluate,
         "plugin": cmd_plugin,
     }
     try:

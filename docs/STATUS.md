@@ -24,6 +24,64 @@ corpus inside it.
 | Tests pass | 23/23 (`pytest`, locally) |
 | Plugin layer is installable | pnpm 12.10.1 present, so `dsh plugin --profile … add <pkg>` works |
 
+## PDF extraction performance
+
+The two pdfplumber operators were ~100% of extraction time, and each opened the
+document and parsed the page independently. Fixed by caching one pdfplumber handle
+per document and returning the same `Page` object to every operator, so the
+expensive layout parse runs once and is shared.
+
+| | before | after |
+| --- | --- | --- |
+| aggregate, 21 pages / 3 documents | 1.98 pages/s | **6.2 pages/s** |
+| figure-heavy PDF (Chucky) | 2.7 | 6.0 |
+| path-free PDF (Query Optimization) | 2.5 | 21.5 |
+| `pdf_tables`, where it runs | 3.51 s | 0.15 s |
+
+`tools/benchmark_pdf.py` exists so this stays measurable. Two results worth
+recording as much as the wins:
+
+- A sharper table filter ("skip unless the page has ≥2 wide, thin ruling lines")
+  reached 12 pages/s — and **dropped 4 real tables in 32 sampled pages**. An
+  equivalence test caught it; the safe rule is the slower one, and the commit says
+  so.
+- Reading font sizes straight from PDFium (2.4 ms for 6192 characters, versus
+  ~250 ms for pdfminer) is 10× faster and gives a clean size histogram (title
+  17.2, heading 12, body 9). It is **not** the default: an A/B against pdfminer
+  gave 0% agreement, with authors interleaved into affiliations and phantom 140pt
+  headings, because line assembly on dense layouts is unfinished. It stays behind
+  `backend: "pdfium"` so the work is measurable rather than blind.
+
+## Evaluating correctness
+
+`docpipe evaluate` answers what the gate cannot. The gate asks "did extraction
+fail?"; the evaluator asks **"did extraction lose anything?"** — and for a deck
+whose text is perfect while its eleven images become eleven empty figure blocks,
+those are different answers.
+
+Every unit is re-read from the **source** to establish what was there, and each
+object must be accounted for:
+
+| metric | question |
+| --- | --- |
+| `text_recall` | what share of the source's tokens reached the output (multiset, not diff — reordering is legitimate) |
+| `image_accounting` | how many source images were actually *read*, not merely linked |
+| `table_survival` | tables the source has versus tables the output carries |
+| `clean_pages` | pages with no flag at all |
+
+On the two-document sample: text 100%, images 77.8%, tables 86.1%, **score 0.883**,
+8 of 18 pages flagged. The findings are real: three pages with a table the
+extractor missed, one garbled page, and an offline run whose image-only slides
+produced nothing.
+
+The **agent judge** (`--judge-sample N`) puts the page image and the extracted
+content in front of the vision model and asks what is missing or wrong. It is
+sampled, budgeted, and prefers pages a metric already flagged. It earned its place
+immediately by catching a blind spot in the metric itself: the first version
+counted a figure block *pointing at* an image as the image being extracted, and
+reported 100% image accounting for a deck whose slides were empty. The judge
+reported "提取结果为空" — extraction is empty — on the same pages.
+
 ## Not verified
 
 - **No agent session has ever started in the image.** See the blocker below. The

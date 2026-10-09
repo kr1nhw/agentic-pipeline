@@ -272,6 +272,36 @@ class PdfSession(BaseSession):
             signals = page_signals(text, width, height)
             yield UnitSeed(page_no=page_no, kind="pdf_page", signals=signals, text_layer=text)
 
+    def page_objects(self, page_no: int) -> dict[str, int]:
+        """Count the objects the source page actually contains.
+
+        Evaluation needs this: "expected images" has to come from the file, not
+        from the extraction being judged, or the measurement is circular.
+        """
+        counts = {"images": 0, "paths": 0, "texts": 0}
+        page = None
+        try:
+            with _PDFIUM_LOCK:
+                page = self._pdf[page_no - 1]
+                for obj in page.get_objects():
+                    kind = int(obj.type)
+                    if kind == 3:      # FPDF_PAGEOBJ_IMAGE
+                        counts["images"] += 1
+                    elif kind == 2:    # FPDF_PAGEOBJ_PATH
+                        counts["paths"] += 1
+                    elif kind == 1:    # FPDF_PAGEOBJ_TEXT
+                        counts["texts"] += 1
+        except Exception:  # noqa: BLE001 - an inventory is a nicety, never fatal
+            pass
+        finally:
+            if page is not None:
+                try:
+                    with _PDFIUM_LOCK:
+                        page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return counts
+
     def page_profile(self, page_no: int) -> dict[str, Any]:
         """Facts PDFium can report in milliseconds, used to skip expensive work.
 

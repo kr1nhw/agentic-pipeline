@@ -43,23 +43,20 @@ def op_pdf_tables(ctx: OpContext, params: dict[str, Any]) -> OpResult:
         return OpResult(cost=Cost(duration_ms=timer.ms()), diagnostics=["no session for table extraction"])
 
     strategy = str(params.get("strategy", "lines"))
+    min_rows = int(params.get("min_rows", MIN_TABLE_ROWS))
+    min_cols = int(params.get("min_cols", MIN_TABLE_COLS))
+    max_empty = float(params.get("max_empty_frac", EMPTY_CELL_LIMIT))
 
-    # The lines strategy works from ruling lines, which are vector paths. A page
-    # with none cannot yield a table, and PDFium can say so in a millisecond
-    # instead of pdfplumber spending a quarter of a second proving it. The check
-    # is skipped for the text strategy, which infers cells from whitespace and
-    # needs no paths at all.
     # Skip only when the page has NO vector paths at all. The lines strategy
     # derives its rules from vector objects, so with none there is nothing to
     # derive — that direction is safe by construction.
     #
     # A sharper-looking rule was tried first and measured: "skip unless the page
     # has at least two wide, thin paths". It dropped real tables on 4 of 32
-    # sampled pages, because pdfminer also builds rules from filled rectangles
-    # and from vertical strokes that a width-and-thickness test does not
-    # recognise. A heuristic that silently loses tables is far worse than a
-    # heuristic that occasionally runs an operator for nothing, so the rule is now
-    # the one that cannot be wrong.
+    # sampled pages, because pdfminer also builds rules from filled rectangles and
+    # from vertical strokes that a width-and-thickness test does not recognise. A
+    # heuristic that silently loses tables is far worse than one that occasionally
+    # runs an operator for nothing, so the rule is now the one that cannot be wrong.
     if strategy == "lines" and ctx.session is not None and hasattr(ctx.session, "page_profile"):
         profile = ctx.session.page_profile(ctx.state.page_no)
         if profile.get("profiled") and profile.get("n_paths", 1) == 0:

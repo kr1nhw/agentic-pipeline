@@ -1,0 +1,446 @@
+{
+  "evaluated_at": "2026-10-09T10:21:18.825135+00:00",
+  "out_dir": ".eval-run",
+  "documents": [
+    {
+      "doc_id": "55faa3e3d8587040",
+      "source_path": "dataset/Chucky- A Succinct Cuckoo Filter for LSM-Tree.pdf",
+      "format": "pdf",
+      "pipeline_id": "pdf-born-digital-text",
+      "pages": [
+        {
+          "page_id": "55faa3e3d8587040:p1",
+          "kind": "pdf_page",
+          "source_chars": 8403,
+          "output_chars": 8404,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p2",
+          "kind": "pdf_page",
+          "source_chars": 9291,
+          "output_chars": 9205,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 1,
+          "linked_images": 0,
+          "source_tables": 1,
+          "output_tables": 1,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p3",
+          "kind": "pdf_page",
+          "source_chars": 9528,
+          "output_chars": 9274,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 1,
+          "output_tables": 0,
+          "flags": [
+            "table_missing (0/1 extracted)"
+          ],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p4",
+          "kind": "pdf_page",
+          "source_chars": 10624,
+          "output_chars": 11427,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 1,
+          "linked_images": 0,
+          "source_tables": 2,
+          "output_tables": 1,
+          "flags": [
+            "table_missing (1/2 extracted)"
+          ],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p5",
+          "kind": "pdf_page",
+          "source_chars": 9274,
+          "output_chars": 9019,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 1,
+          "output_tables": 0,
+          "flags": [
+            "table_missing (0/1 extracted)"
+          ],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p6",
+          "kind": "pdf_page",
+          "source_chars": 9896,
+          "output_chars": 9683,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 1,
+          "output_tables": 1,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p7",
+          "kind": "pdf_page",
+          "source_chars": 10105,
+          "output_chars": 9269,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p8",
+          "kind": "pdf_page",
+          "source_chars": 9314,
+          "output_chars": 9136,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p9",
+          "kind": "pdf_page",
+          "source_chars": 9314,
+          "output_chars": 8550,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 1,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p10",
+          "kind": "pdf_page",
+          "source_chars": 8157,
+          "output_chars": 8105,
+          "text_recall": 0.999,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p11",
+          "kind": "pdf_page",
+          "source_chars": 16075,
+          "output_chars": 15506,
+          "text_recall": 0.999,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "garbled (output text is mostly non-alphanumeric)"
+          ],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p12",
+          "kind": "pdf_page",
+          "source_chars": 8098,
+          "output_chars": 8281,
+          "text_recall": 0.999,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p13",
+          "kind": "pdf_page",
+          "source_chars": 16248,
+          "output_chars": 16229,
+          "text_recall": 1.0,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        },
+        {
+          "page_id": "55faa3e3d8587040:p14",
+          "kind": "pdf_page",
+          "source_chars": 6866,
+          "output_chars": 6669,
+          "text_recall": 0.998,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [],
+          "notes": [],
+          "judge": null
+        }
+      ],
+      "pages_with_flags": 4,
+      "text_recall": 0.9997,
+      "image_accounting": 1.0,
+      "table_survival": 0.8214,
+      "clean_pages": 0.7143,
+      "score": 0.9356,
+      "flag_counts": {
+        "table_missing": 3,
+        "garbled": 1
+      },
+      "worst_pages": [
+        {
+          "page_id": "55faa3e3d8587040:p11",
+          "kind": "pdf_page",
+          "source_chars": 16075,
+          "output_chars": 15506,
+          "text_recall": 0.999,
+          "source_images": 0,
+          "accounted_images": 0,
+          "linked_images": 0,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "garbled (output text is mostly non-alphanumeric)"
+          ],
+          "notes": [],
+          "judge": null
+        }
+      ]
+    },
+    {
+      "doc_id": "71d663d3714e1c6c",
+      "source_path": "dataset/lakebase-agent-memory-project-proposal-4slides-v2(1).pptx",
+      "format": "pptx",
+      "pipeline_id": "pptx-image-slide",
+      "pages": [
+        {
+          "page_id": "71d663d3714e1c6c:p1",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p2",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p3",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p4",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        }
+      ],
+      "pages_with_flags": 4,
+      "text_recall": 1.0,
+      "image_accounting": 0.0,
+      "table_survival": 1.0,
+      "clean_pages": 0.0,
+      "score": 0.7,
+      "flag_counts": {
+        "image_unaccounted": 4
+      },
+      "worst_pages": [
+        {
+          "page_id": "71d663d3714e1c6c:p1",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p2",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p3",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        },
+        {
+          "page_id": "71d663d3714e1c6c:p4",
+          "kind": "slide",
+          "source_chars": 0,
+          "output_chars": 0,
+          "text_recall": 1.0,
+          "source_images": 1,
+          "accounted_images": 0,
+          "linked_images": 1,
+          "source_tables": 0,
+          "output_tables": 0,
+          "flags": [
+            "image_unaccounted (0/1 accounted for)"
+          ],
+          "notes": [
+            "1 image(s) linked but not read; escalation or an explicit describe step would extract them"
+          ],
+          "judge": null
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "documents": 2,
+    "pages": 18,
+    "pages_with_flags": 8,
+    "text_recall": 0.9997,
+    "image_accounting": 0.7778,
+    "table_survival": 0.8611,
+    "score": 0.8832,
+    "flag_counts": {
+      "table_missing": 3,
+      "garbled": 1,
+      "image_unaccounted": 4
+    }
+  }
+}

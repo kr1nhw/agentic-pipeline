@@ -35,6 +35,7 @@ from docpipe.api.registry import Registry
 from docpipe.api.types import (
     BudgetExceeded,
     Capability,
+    CapabilityError,
     Cost,
     DocpipeError,
     OpContext,

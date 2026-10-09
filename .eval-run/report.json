@@ -1,0 +1,120 @@
+{
+  "docpipe_version": "0.1.0",
+  "api_version": "1",
+  "started_at": "2026-10-09T10:19:17.254098Z",
+  "finished_at": "2026-10-09T10:19:20.484898Z",
+  "model": null,
+  "offline": true,
+  "engine": "local",
+  "shard": null,
+  "docs": [
+    {
+      "doc_id": "55faa3e3d8587040",
+      "source_path": "dataset/Chucky- A Succinct Cuckoo Filter for LSM-Tree.pdf",
+      "format": "pdf",
+      "units": 14,
+      "route_counts": {
+        "static": 13,
+        "needs_review": 1
+      },
+      "gate_failures": 1,
+      "escalations": 0,
+      "vl_calls": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "usd_est": 0.0,
+      "pipeline_id": "pdf-born-digital-text",
+      "needs_review": [
+        "55faa3e3d8587040:p4"
+      ],
+      "errors": [],
+      "duration_ms": 2652
+    },
+    {
+      "doc_id": "71d663d3714e1c6c",
+      "source_path": "dataset/lakebase-agent-memory-project-proposal-4slides-v2(1).pptx",
+      "format": "pptx",
+      "units": 4,
+      "route_counts": {
+        "needs_review": 4
+      },
+      "gate_failures": 4,
+      "escalations": 0,
+      "vl_calls": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "usd_est": 0.0,
+      "pipeline_id": "pptx-image-slide",
+      "needs_review": [
+        "71d663d3714e1c6c:p1",
+        "71d663d3714e1c6c:p2",
+        "71d663d3714e1c6c:p3",
+        "71d663d3714e1c6c:p4"
+      ],
+      "errors": [],
+      "duration_ms": 50
+    }
+  ],
+  "totals": {
+    "documents": 2,
+    "units": 18,
+    "vl_calls": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "usd_est": 0.0,
+    "needs_review": 5,
+    "gate_failures": 5,
+    "escalations": 0,
+    "route_counts": {
+      "static": 13,
+      "needs_review": 5
+    },
+    "usd": 0.0,
+    "stopped_reason": null,
+    "cache": {
+      "hits": 0,
+      "misses": 78
+    }
+  },
+  "plugins": [
+    {
+      "id": "builtin",
+      "version": "0",
+      "api_version": "1",
+      "source": "builtin",
+      "capabilities": [
+        "filesystem_read",
+        "filesystem_write",
+        "model_calls",
+        "network",
+        "subprocess"
+      ],
+      "ops": 19,
+      "formats": [
+        "pdf",
+        "pptx",
+        "docx",
+        "code",
+        "text",
+        "image"
+      ],
+      "pipelines": [
+        "code-repo",
+        "docx-report-tables",
+        "image-single",
+        "md-notes",
+        "pdf-born-digital-text",
+        "pdf-scanned-image",
+        "pdf-slide-export",
+        "pptx-image-slide",
+        "pptx-text-deck"
+      ],
+      "exporters": [],
+      "hooks": [],
+      "violations": [],
+      "disabled": false,
+      "error": null
+    }
+  ],
+  "stopped_reason": null
+}

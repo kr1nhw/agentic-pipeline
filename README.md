@@ -21,6 +21,10 @@ without rebuilding anything.
 ## Quick start
 
 ```bash
+# judge what a run kept: coverage, not vibes
+docker run --rm -v /path/to/out:/out docpipe-agent:0.1.0 \
+  docpipe evaluate --out /out --judge-sample 5
+
 # build (see docs/operations.md; the build host needs docker + network)
 tools/build_image.sh
 
@@ -56,6 +60,7 @@ docker run --rm -v "$PWD/dataset:/in:ro" -v "$PWD/out:/out" \
 | `docs/<doc_id>/content.jsonl` | one block per line, with provenance |
 | `chunks.jsonl` | memory-oriented chunks: text + heading path + page/bbox pointers |
 | `report.json` | per-document status, gate failures, escalations, token and cost totals |
+| `evaluation.json` | what the source contained, what the output kept, and what was lost |
 | `review/` | `needs_review` evidence and `request_new_op` requests |
 
 ## Repository map
