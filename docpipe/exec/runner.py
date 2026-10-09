@@ -511,12 +511,17 @@ class Runner:
             if escalations >= max(0, plan.verify.max_escalations):
                 record.route = "needs_review"
                 break
-            if not self._can_escalate(plan):
-                record.route = "needs_review" if quality.get("needs_escalation") else record.route
+            if not plan.verify.escalate_to:
+                record.route = "needs_review"
                 break
             escalations += 1
             attempt_steps = self._escalation_steps(plan, quality, escalations)
             if not attempt_steps:
+                record.route = "needs_review"
+                break
+            runnable, why = self._rung_runnable(attempt_steps)
+            if not runnable:
+                record.errors.append(f"escalation {escalations} skipped: {why}")
                 record.route = "needs_review"
                 break
             # Label by what produced the content, not by which rung was climbed.
@@ -653,16 +658,29 @@ class Runner:
             return False
         return True
 
-    def _can_escalate(self, plan: Plan) -> bool:
-        """Whether the ladder may run at all: a route, a client, and live budget.
+    def _rung_runnable(self, steps: list[PlanStep]) -> tuple[bool, str]:
+        """Can this rung of the ladder run, and if not, why not?
 
-        Deliberately conservative. A run with no credential, in `--offline` mode,
-        or over budget does not fail — it stops escalating and marks the page for
-        review, which is a result a person can act on.
+        The ladder has deterministic rungs: on a column problem, attempt 1 runs a
+        column-aware text pass, which needs no model at all. Asking "is a model
+        available" before *starting* to escalate therefore refused work that never
+        needed one — an offline run marked every column page for review instead of
+        repairing it, and an IRS form's two-column pages failed with a local
+        operator sitting unused.
+
+        So the question is per rung: a rung made only of local operators runs
+        anywhere, and a rung containing a vision step still needs a client.
         """
-        if not plan.verify.escalate_to or not self.config.model_enabled or self.vl is None:
-            return False
-        return not self.budget.exhausted
+        for step in steps:
+            try:
+                spec = self.registry.get_op(step.op)
+            except DocpipeError as exc:
+                return False, str(exc)
+            if spec.cost_class == "vl" and (not self.config.model_enabled or self.vl is None):
+                return False, f"{step.op} needs a vision client, and this run has none"
+        if self.budget.exhausted:
+            return False, "budget exhausted"
+        return True, ""
 
     def _escalation_steps(self, plan: Plan, quality: dict[str, Any], attempt: int) -> list[PlanStep]:
         """Build the ladder for one escalation attempt.

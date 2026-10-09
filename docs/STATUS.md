@@ -84,11 +84,38 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 5 — government documents, and the rule they broke
+
+Seven documents harvested from govinfo and the IRS (12.4 MiB): two daily issues
+of the Congressional Record (three-to-four newspaper columns per page), the whole
+of US Code title 17, a 300-page Federal Register issue, and three IRS forms.
+They were chosen because nothing in the corpus looked like them.
+
+| document | pages | before | after |
+| --- | --- | --- | --- |
+| Congressional Record 2024-01-09 | 51 | **51 pages refused** | 49 static · 2 review · 34 s · 0 vision calls |
+| Congressional Record 2024-01-10 | 80 | **run crashed** | 77 static · 3 review · 72 s · 0 vision calls |
+| US Code title 17 | 1 | — | see the form note below |
+| Federal Register 2024-01-10 | 300 | 300 pages refused | trusted (measured on samples) |
+| IRS f1040 / f1120 / p15 | 2 / 6 / 5 | refused | **still refused — open finding** |
+
+Every Congressional Record page carries ~20,000 characters of *perfect* text
+(`118 th CONGRESS, SECOND SESSION ... The House met at 6:30 p.m. and was called to
+order`), every one of its 329 fonts unembedded and without a unicode map, so the
+trust rule refused all of them. Fixed by making font metadata a *proposal*: the
+page's own text decides, by word shape. At ~1,800 + 2,100 tokens per escalated
+page, the old rule would have spent roughly **270 K tokens** transcribing the two
+Record issues alone, and about **1.2 M** on the Federal Register — to repair text
+that was never wrong. See `skills/layout-adaptation/SKILL.md` for the v6 rule.
+
+Estimated, not measured: the Federal Register figure extrapolates from pages that
+were sampled, because the full run had not finished when this was written.
+
 ### Corpus round 4 — the deterministic pass pays for almost everything
 
 | quantity | value |
 | --- | --- |
-| corpus | 32 documents / 571 pages (arXiv, ACL, RFC, library fixtures, synthetic scans) |
+| corpus | 32 documents / 571 pages (arXiv, ACL, RFC, library fixtures, synthetic scans) + 7 government documents added in round 5 |
 | vision calls | **1** — down from 25 pages that wanted vision in round 1 |
 | tokens **billed by the pipeline** | 1,990 prompt + 1,402 completion = **3,392** |
 | routes | 339 static · **167 adapted** · 62 dynamic · 3 needs_review |
@@ -199,6 +226,22 @@ None of this affects the extraction runtime, which does not need the harness.
 | The corpus fetcher trusted the HTTP status and the `.pdf` extension | govinfo answers a wrong package id with **200 and an HTML placeholder**, so three document-shaped HTML pages entered the corpus as PDFs; downloads are now checked against magic bytes |
 | `--skip` re-runs overwrote `corpus-manifest.jsonl` | harvesting one source discarded the provenance of every other, leaving a manifest that looked complete |
 | `Accept-Encoding: gzip` sent to the SEC, which urllib does not decode | EDGAR's JSON arrived as gzip bytes and every filing failed with a decode error |
+| `pdffonts` output parsed by token index | its `type` column contains a space (`Type 1C`), so every field to the right shifted by one: `emb` read the encoding and `uni` read the subset flag — on the documents where it mattered most |
+| Font metadata treated as a verdict on the text layer | the Congressional Record's 329 unembedded, unmapped fonts extract perfectly; the rule refused all 51 pages, and would have refused a 300-page Federal Register too |
+| The sequential window path had no failure isolation | the pooled path caught a failing window and the single-window path did not, so a file that vanished mid-document exited 1 with 40 of 80 pages unread |
+
+## Open findings
+
+- **IRS forms are refused.** `f1040.pdf` (2 units) and `f1120.pdf` (6 units) fail
+  the gate on every page while carrying full text. Forms are the one archetype in
+  the corpus with no working path: boxed fields, checkboxes and instructions that
+  wrap around them. The next round should establish whether the gate is right and
+  the content is genuinely not extractable as prose, or the reader is wrong.
+- **Parallelism stops at one core on large documents.** PDFium access is
+  serialised by a lock and a window maps to a session, so a 300-page document runs
+  effectively single-threaded (`docker stats` showed 99.9 % with `--cpus 10`).
+  Wall-clock for the corpus is now ~0.9 s/page, so this is a throughput ceiling
+  rather than a bug, and it is the thing to fix before multi-GB inputs.
 
 ## Next three actions
 
