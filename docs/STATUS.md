@@ -98,13 +98,13 @@ so the numbers are what the pipeline actually spends rather than what it saved:
 | **total tokens** | **77 995** |
 | **per page** | **0.014 calls · 56.8 tokens** |
 | per escalated page | ~4 105 tokens |
-| pages repaired deterministically instead | **423** — 14× the number that reached the model |
+| pages repaired deterministically instead | **410** (`adapted`) — 22× the number that reached the model |
 | pages left for review | 13 |
 
 The counterfactual is what makes the number mean something. Without the deterministic
-rungs, the 423 pages they repaired would have joined the 19 that genuinely needed a
-model, at ~4 105 tokens each: about **1.8 M tokens**, or 1 316 tokens a page. The
-pipeline spends 56.8. That is a **23× reduction**, and it is the largest single
+rungs, the 410 pages they repaired would have joined the 19 that genuinely needed a
+model, at ~4 105 tokens each: about **1.76 M tokens**, or 1 281 tokens a page. The
+pipeline spends 56.8. That is a **22.5× reduction**, and it is the largest single
 effect of the work in this session — larger than the trust-rule correction that
 stopped 400-odd GPO pages being sent to vision, because that correction removed a
 whole file family while the ladder removes a class of page.
