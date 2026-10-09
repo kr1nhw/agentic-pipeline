@@ -159,6 +159,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     registry = build_registry(plugin_paths=config.plugin_paths)
     runner = Runner(config, registry, log=_structured_log)
     rows: list[dict[str, Any]] = []
+    cmd_probe._jobs = []
     for path in runner.discover([Path(item) for item in args.inputs]):
         try:
             job = runner._prepare(path)  # noqa: SLF001 - probe is the diagnostic view of preparation
@@ -168,6 +169,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         if job is None:
             rows.append({"path": str(path), "error": "unknown format"})
             continue
+        cmd_probe._jobs.append(job)
         rows.append(
             {
                 "path": str(path),
@@ -184,6 +186,53 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 },
             }
         )
+    if args.pages:
+        # Per-page evidence is what makes routing per PAGE possible. A document is
+        # not one layout: a scanned appendix, a two-column insert and a table page
+        # are normal, and a document-level decision cannot express any of them.
+        for row in rows:
+            if "error" in row:
+                print(f"{row['path']}: {row['error']}")
+                continue
+            path = Path(row["path"])
+            job = next(
+                (item for item in getattr(cmd_probe, "_jobs", []) if str(item.path) == row["path"]),
+                None,
+            )
+            if job is None:
+                continue
+            session = job.session_factory(path, job.doc_id, config)
+            try:
+                print(f"\n{path.name}  ({job.units} units, pipeline={job.decision.pipeline_id})")
+                print(f"  {'page':>5} {'chars':>7} {'cols':>5} {'trust':>6} {'imgs':>5} {'rules':>6}  needs")
+                for seed in session.enumerate_units():
+                    signals = seed.signals
+                    profile = session.page_profile(seed.page_no) if hasattr(session, "page_profile") else {}
+                    if hasattr(session, "page_objects"):
+                        profile = {**profile, **session.page_objects(seed.page_no)}
+                    needs = []
+                    if getattr(signals, "text_layer_trust", 1.0) < 0.4:
+                        needs.append("ocr")
+                    if int(getattr(signals, "columns", 1) or 1) >= 2:
+                        needs.append("layout")
+                    if profile.get("n_rules", 0) >= 2:
+                        needs.append("tables")
+                    print(
+                        "  %5d %7d %5s %6s %5s %6s  %s"
+                        % (
+                            seed.page_no,
+                            signals.text_layer_chars,
+                            getattr(signals, "columns", 1),
+                            getattr(signals, "text_layer_trust", 1.0),
+                            profile.get("n_images", "?"),
+                            profile.get("n_rules", "?"),
+                            ",".join(needs) or "-",
+                        )
+                    )
+            finally:
+                session.close()
+        return 0
+
     print(json.dumps(rows, indent=2, ensure_ascii=False))
     if args.summary:
         static = sum(1 for row in rows if row.get("pipeline"))
@@ -406,6 +455,11 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--work", default=os.environ.get("DOCPIPE_WORK", "/work"))
     probe.add_argument("--plugin", action="append", default=None)
     probe.add_argument("--summary", action="store_true")
+    probe.add_argument(
+        "--pages",
+        action="store_true",
+        help="per-page signals and what each page appears to need (ocr/layout/tables)",
+    )
 
     ops = sub.add_parser("ops", help="list the operator registry")
     ops.add_argument("--markdown", action="store_true", help="emit the generated registry markdown")

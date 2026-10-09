@@ -1,0 +1,18 @@
+[
+  {
+    "doc_id": "4de48a7a58523bb7",
+    "source_path": "dataset/[sigmod2022-Tutorial] Dissecting, Designing, and Optimizing LSM-based Data Stores.pdf",
+    "format": "pdf",
+    "bytes": 30310369,
+    "sha256": "4de48a7a58523bb7",
+    "units": 181,
+    "kind": "pdf_page",
+    "probe": {
+      "route": "pdf-slide-export",
+      "confidence": 0.95,
+      "reason": "matched 'pdf-slide-export' at 0.95"
+    },
+    "pipeline_id": null,
+    "errors": []
+  }
+]

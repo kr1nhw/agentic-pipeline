@@ -64,6 +64,9 @@ class Config(BaseSettings):
     max_escalations: int = 2
     gate_text_floor_chars: int = 80
     gate_image_area_frac: float = 0.5
+    #: Below this, the text layer is treated as unreliable and escalated. Set from
+    #: measurement: an OCR layer scores 0.15, a born-digital paper 0.5-0.6.
+    gate_trust_floor: float = 0.4
 
     # ── scale ───────────────────────────────────────────────────────────────
     workers: int = Field(default=0, description="Local-operator processes. 0 = half the CPUs.")

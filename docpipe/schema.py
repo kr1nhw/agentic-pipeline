@@ -130,6 +130,11 @@ class PageSignals(BaseModel):
     page_height: float | None = None
     layout_hint: str | None = None
     text_sample: str | None = None
+    #: Estimated column count. 1 for prose, 2+ when a gutter was measured.
+    columns: int = 1
+    #: How much the text layer can be believed, 0..1. Low means it is an OCR
+    #: layer: present, plausible, and wrong about characters.
+    text_layer_trust: float = 1.0
 
 
 class PageRecord(BaseModel):

@@ -97,6 +97,39 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
                 f"with {image_area if image_area is not None else 'unknown'} image coverage"
             )
 
+    # 5. Text-layer trust. The gate's other checks ask whether the text layer is
+    #    present and not obviously broken. This one asks whether it can be BELIEVED,
+    #    which is a different question and the one that catches an OCR layer.
+    #
+    #    The motivating document renders `T(R)` as `~'(R)`, `R^[1]` as `R tl]` and
+    #    `∪{R[y] × yS | y ∈ Y}` as `U{Ry x ySI y E Y}` — while presenting 2447
+    #    characters a page, 195 words and nine replacement characters. Every other
+    #    check passes it, and its extracted text is quietly wrong about every
+    #    formula in the paper.
+    trust = getattr(signals, "text_layer_trust", 1.0)
+    metrics["text_layer_trust"] = trust
+    trust_floor = float(params.get("trust_floor", getattr(ctx.config, "gate_trust_floor", 0.4)))
+    if stripped and trust < trust_floor and not vision_sourced:
+        # The layer is still an OCR layer, but nothing is being read from it any
+        # more: the content came from the page image. Distrusting it again would
+        # mark every successfully transcribed page for review.
+        reasons.append(
+            f"text layer cannot be trusted (trust {trust:.2f} < {trust_floor}): unembedded fonts "
+            "without unicode maps mean characters are inferred, not read"
+        )
+
+    # 6. Column structure. A flat text layer preserves lines but not columns, so on
+    #    a two-column page the columns interleave and the text reads as nonsense
+    #    while looking fine in a diff. Layout-aware extraction needs geometry: a
+    #    raster and a model, or a layout engine.
+    columns = int(getattr(signals, "columns", 1) or 1)
+    metrics["columns"] = columns
+    if columns >= 2 and stripped and not vision_sourced and not params.get("columns_handled", False):
+        reasons.append(
+            f"page has {columns} text columns; a flat text layer interleaves them and "
+            "needs layout-aware extraction"
+        )
+
     # 5. Tables that were detected but not extracted.
     candidates = signals.n_table_candidates or 0
     extracted = sum(1 for block in record.blocks if block.type == "table")

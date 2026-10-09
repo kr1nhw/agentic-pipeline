@@ -98,6 +98,8 @@ class PdfSession(BaseSession):
         self._plumber_seen: list[int] = []
         #: Cheap per-page facts, computed once and reused by the ops that ask.
         self._profiles: dict[int, dict[str, Any]] = {}
+        self._layouts: dict[int, dict[str, Any]] = {}
+        self._font_report: dict[str, Any] | None = None
         # Window cache: one pdftotext call covers many pages.
         self._text_window: tuple[int, int] | None = None
         self._text_pages: list[str] = []
@@ -270,7 +272,185 @@ class PdfSession(BaseSession):
                 )
                 continue
             signals = page_signals(text, width, height)
+            # Layout and text-layer trust are what make routing per PAGE rather
+            # than per document possible: one page of a scanned appendix, one page
+            # of a two-column insert, and the rest born-digital text are all normal.
+            layout = self.page_layout(page_no)
+            signals.columns = layout.get("columns", 1)
+            signals.text_layer_trust = layout.get("trust", 1.0)
             yield UnitSeed(page_no=page_no, kind="pdf_page", signals=signals, text_layer=text)
+
+    # ── text-layer trust and page layout ────────────────────────────────────
+
+    def font_report(self) -> dict[str, Any]:
+        """Whether the document's fonts are embedded and carry unicode maps.
+
+        This is the cheapest reliable signal that a text layer came from OCR, and
+        it is decisive. A born-digital PDF embeds subset fonts with a ToUnicode
+        CMap, so extraction is a dictionary lookup and the characters are exactly
+        the author's. An OCR'd scan references a system font by name with no
+        unicode map, so extraction guesses glyph-to-character from the font name —
+        and that guess is confidently wrong for anything outside plain prose.
+
+        The document that prompted this, a 1950s topology paper, looks fine by every
+        other measure: 2447 characters a page, 195 words, nine replacement
+        characters. Its text layer renders `T(R)` as `~'(R)`, `R^[1]` as `R tl]`,
+        and `∪{R[y] × yS | y ∈ Y}` as `U{Ry x ySI y E Y}`. Nothing in the output
+        signals a problem; only the fonts do.
+
+            pdffonts scan.pdf   -> TimesNewRoman  TrueType  no no no
+            pdffonts paper.pdf  -> RKVWCA+LinLibertineTI  Type 1  yes yes yes
+        """
+        if self._font_report is not None:
+            return self._font_report
+
+        report: dict[str, Any] = {"total": 0, "embedded": 0, "unicode_mapped": 0, "ocr_like": False, "fonts": []}
+        binary = shutil.which("pdffonts")
+        if binary:
+            try:
+                proc = subprocess.run(
+                    [binary, str(self.path)], capture_output=True, timeout=60, check=False
+                )
+                for line in _decode(proc.stdout).splitlines()[2:]:
+                    parts = line.split()
+                    if len(parts) < 5:
+                        continue
+                    name, font_type, embedded, subset, unicode_ok = parts[0], parts[1], parts[2], parts[3], parts[4]
+                    report["total"] += 1
+                    report["fonts"].append({"name": name[:40], "type": font_type, "embedded": embedded == "yes", "unicode": unicode_ok == "yes"})
+                    if embedded == "yes":
+                        report["embedded"] += 1
+                    if unicode_ok == "yes":
+                        report["unicode_mapped"] += 1
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        if report["total"]:
+            # A document whose fonts are mostly unembedded AND mostly unmapped is
+            # an OCR text layer, whatever the extraction quality looks like.
+            unembedded = report["total"] - report["embedded"]
+            unmapped = report["total"] - report["unicode_mapped"]
+            report["ocr_like"] = bool(
+                unembedded >= report["total"] * 0.6 and unmapped >= report["total"] * 0.6
+            )
+        self._font_report = report
+        return report
+
+    def page_layout(self, page_no: int) -> dict[str, Any]:
+        """Estimate the page's column structure from character positions.
+
+        Multi-column layout is the single most common reason extracted text reads
+        as nonsense while looking fine in a diff, and it is measurable without
+        parsing anything: characters occupy a set of vertical bands, and a column
+        gutter is a band of the page that no character occupies across its whole
+        height.
+
+        Sampling is deliberate. The question is where text *can* be, not what it
+        says, so a few hundred character boxes answer it in milliseconds.
+        """
+        cached = self._layouts.get(page_no)
+        if cached is not None:
+            return cached
+
+        layout: dict[str, Any] = {"columns": 1, "gutter": None, "coverage": 0.0, "profiled": False}
+        page = None
+        textpage = None
+        try:
+            with _PDFIUM_LOCK:
+                page = self._pdf[page_no - 1]
+                page_width = float(page.get_width())
+                textpage = page.get_textpage()
+                count = textpage.count_chars()
+                if count and page_width > 0:
+                    stride = max(1, count // 400)
+                    bins = 100
+                    occupied = [0] * bins
+                    sampled = 0
+                    for index in range(0, count, stride):
+                        char = textpage.get_text_range(index, 1)
+                        if not char or not char.strip():
+                            continue
+                        left, _bottom, right, _top = textpage.get_charbox(index)
+                        if right <= left:
+                            continue
+                        sampled += 1
+                        first = max(0, min(bins - 1, int(left / page_width * bins)))
+                        last = max(0, min(bins - 1, int(right / page_width * bins)))
+                        for slot in range(first, last + 1):
+                            occupied[slot] += 1
+                    if sampled >= 40:
+                        layout["coverage"] = round(sum(1 for value in occupied if value) / bins, 3)
+                        # The widest empty run strictly inside the page, ignoring
+                        # the margins, is a candidate gutter.
+                        best: tuple[int, int] | None = None
+                        run_start: int | None = None
+                        for slot in range(int(bins * 0.15), int(bins * 0.85)):
+                            if occupied[slot] == 0:
+                                run_start = slot if run_start is None else run_start
+                                continue
+                            if run_start is not None:
+                                if best is None or (slot - run_start) > (best[1] - best[0]):
+                                    best = (run_start, slot)
+                                run_start = None
+                        if run_start is not None and (best is None or (int(bins * 0.85) - run_start) > (best[1] - best[0])):
+                            best = (run_start, int(bins * 0.85))
+                        if best and (best[1] - best[0]) >= bins * 0.03:
+                            left_chars = sum(occupied[: best[0]])
+                            right_chars = sum(occupied[best[1] :])
+                            total = left_chars + right_chars
+                            # Both sides must carry real text, or it is not a gutter
+                            # but simply the end of a short line.
+                            if total and left_chars >= total * 0.25 and right_chars >= total * 0.25:
+                                layout["columns"] = 2
+                                layout["gutter"] = (
+                                    round(best[0] / bins * page_width, 1),
+                                    round(best[1] / bins * page_width, 1),
+                                )
+                    layout["profiled"] = True
+        except Exception as exc:  # noqa: BLE001 - a layout estimate is an optimisation
+            layout["error"] = str(exc)
+        finally:
+            if textpage is not None:
+                try:
+                    with _PDFIUM_LOCK:
+                        textpage.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if page is not None:
+                try:
+                    with _PDFIUM_LOCK:
+                        page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        layout["trust"] = self.text_layer_trust(page_no, layout)
+        self._layouts[page_no] = layout
+        return layout
+
+    def text_layer_trust(self, page_no: int, layout: dict[str, Any] | None = None) -> float:
+        """How much the text layer can be believed, 0..1.
+
+        This is the signal the gate was missing. `gate_default_v1` asks whether the
+        text layer is *present and not obviously broken*; it has no opinion on
+        whether the characters are the right ones. On an OCR layer they are not,
+        and nothing in the text says so.
+        """
+        report = self.font_report()
+        trust = 1.0
+        if report.get("total"):
+            mapped = report.get("unicode_mapped", 0) / report["total"]
+            embedded = report.get("embedded", 0) / report["total"]
+            # Missing unicode maps are the dominant term: without them the character
+            # identity is inferred from the font name and cannot be checked.
+            trust = min(trust, 0.25 + 0.75 * mapped)
+            trust = min(trust, 0.35 + 0.65 * embedded)
+        if report.get("ocr_like"):
+            trust = min(trust, 0.3)
+            objects = self.page_objects(page_no)
+            # A scanned page carries its raster as a page-sized image; an OCR layer
+            # over one is the strongest evidence that pixels are the better source.
+            if objects.get("images", 0) >= 1:
+                trust = min(trust, 0.15)
+        return round(max(0.0, min(1.0, trust)), 3)
 
     def page_objects(self, page_no: int) -> dict[str, int]:
         """Count the objects the source page actually contains.

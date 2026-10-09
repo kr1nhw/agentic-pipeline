@@ -599,6 +599,17 @@ class Runner:
             tasks.append("tables")
         if "image" in text or "garbled" in text:
             tasks.append("figures")
+        # A multi-column page is a reading-order problem, and a page whose text
+        # layer is an OCR layer is a character-identity problem. Both are settled
+        # by looking at the page, so the escalation asks for the transcription the
+        # reason implies rather than the default one.
+        if "columns" in text:
+            tasks = ["layout", "ocr"] + [task for task in tasks if task not in ("layout", "ocr")]
+        if "cannot be trusted" in text:
+            tasks = ["ocr", "layout"] + [task for task in tasks if task not in ("ocr", "layout")]
+            # Characters must come from the image, not from the layer being
+            # distrusted, so the model is told to read rather than to reconcile.
+            tasks.append("formulas")
 
         dpi = 150 if attempt == 1 else (200 if "table" in text else 165)
         steps = [PlanStep(op="page_raster", params={"dpi": dpi})]

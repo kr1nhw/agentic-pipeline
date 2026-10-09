@@ -1,0 +1,150 @@
+---
+name: layout-adaptation
+description: Decide per PAGE how to extract, when a document's layouts vary — multi-column papers, scanned or OCR'd pages, slide exports, table pages, formula-heavy pages. Load before extracting anything whose layout is not uniform, and whenever a document mixes born-digital text with scans.
+---
+
+# Page-level adaptation
+
+A document is not one layout. A scanned appendix, a two-column insert, a
+landscape table page and a slide export are all normal inside one file, and a
+single document-level decision cannot express any of them. This skill is about
+deciding **per page**, from evidence, without adding a special case for every
+paper you meet.
+
+## The rule that keeps this from becoming hardcoding
+
+**Route on measured signals, never on document identity or filename.** No
+`if "sigmod" in name`, no `if pages > 100`. Every decision below comes from a
+number the runtime measured on the page in front of it. When a new layout
+appears, it appears as a *new combination of signals* — which the existing
+routes already cover — or as genuine new evidence, which is when you add a
+signal, not a branch.
+
+## Start here: ask the runtime what each page needs
+
+```bash
+docpipe probe --in /in --pages
+```
+
+```
+   page   chars  cols  trust  imgs  rules  needs
+      1    2447     1   0.15     1      0  ocr
+      2    9279     2   0.591    0      9  layout,tables
+      3    9502     1   0.591    0      2  tables
+```
+
+| column | what it measures | what it tells you |
+| --- | --- | --- |
+| `chars` | characters in the text layer | whether there is a layer at all |
+| `cols` | text columns, measured from a real gutter in character coverage | a multi-column layout |
+| `trust` | how much the text layer can be believed, 0–1 | whether it is an **OCR layer** |
+| `imgs` | images the source page contains | whether content is in pixels |
+| `rules` | wide, thin vector paths (ruling lines) | whether a table is drawn |
+| `needs` | the routes the signals imply | where to spend effort |
+
+`needs` is a summary, not a verdict. You are the one who decides, and you may
+disagree — but you should disagree with a reason the evidence supports.
+
+## The archetypes, and what each actually needs
+
+| Evidence | Page kind | Route | Why |
+| --- | --- | --- | --- |
+| `trust ≥ 0.4`, `cols = 1` | born-digital prose | `pdf_text_layer` → `pdf_font_heading_map` → `reading_order_v1` | the layer is exact; a model can only make it worse |
+| `trust < 0.4` | OCR layer over a scan | `page_raster` → `vl_extract(tasks=[ocr,layout,formulas])` | the characters are *inferred from a font name*, not read. See below |
+| `cols ≥ 2` | multi-column | `page_raster` → `vl_extract(tasks=[layout,ocr])` | a flat layer preserves lines but not columns; the columns interleave |
+| `rules ≥ 2` | ruled table page | add `pdf_tables(strategy=lines)` | the rules are there to be used |
+| `imgs ≥ 1` and few chars | image or scan page | `page_raster` → `vl_extract(tasks=[describe])` | the content is pixels |
+| aspect ≈ 16:9, `chars` low | slide export | `vl_extract(tasks=[layout])` | drawn tables, shape layout, no reading-order signal |
+| formulas, few words | formula-heavy | `vl_extract(tasks=[formulas])` on the region | symbol identity is lost without a unicode map |
+
+## Why `trust` exists, and why it is the signal people miss
+
+A born-digital PDF embeds subset fonts with a ToUnicode map: extraction is a
+dictionary lookup, and the characters are exactly the author's. An OCR'd scan
+references a system font by name with no map, so extraction *guesses* the
+character from the glyph and the font name.
+
+That guess is fluent and wrong. A 1950s topology paper reports 2447 characters a
+page, 195 words, nine replacement characters — every other check passes it — and
+its text layer renders:
+
+| the page says | the layer says |
+| --- | --- |
+| `R ⊂ X × Y` | `R C X x Y` |
+| `R ∘ S` | `R o S` |
+| `τ(R)` | `~'(R)` |
+| `R[1] ∪ R[2] ∪ ⋯` | `R tl] U R ~1 U R [31` |
+| `for n ≥ 2` | `for n i> 2` |
+
+Nothing in the text signals a problem. The fonts do:
+
+```
+pdffonts scan.pdf   -> TimesNewRoman  TrueType  no no no
+pdffonts paper.pdf  -> RKVWCA+LinLibertineTI  Type 1  yes yes yes
+```
+
+So when `trust` is low, **do not repair the layer — replace its source.** Send the
+page image and ask for a transcription. On the paper above that recovers
+`R ⊂ X × Y`, `τ(R)`, `R[n−1] for n ≥ 2` and every symbol, and the model corrects
+`~'(R)` back to `τ(R)` because it understands the mathematics rather than the
+glyphs.
+
+## Composing a per-page plan
+
+A document that is *mostly* one layout states the default once and overrides the
+pages that differ. This is the whole mechanism — it is a plan, not code:
+
+```json
+{
+  "schema_version": "1",
+  "doc_id": "…",
+  "default_steps": [
+    {"op": "pdf_text_layer", "params": {}},
+    {"op": "pdf_font_heading_map", "params": {}},
+    {"op": "reading_order_v1", "params": {}}
+  ],
+  "page_overrides": [
+    {"pages": [[40, 44]],
+     "reason": "probe: trust 0.15, 1 image, 0 chars of usable text — OCR layer",
+     "steps": [
+       {"op": "page_raster", "params": {"dpi": 200}},
+       {"op": "vl_extract", "params": {"tasks": ["ocr", "layout", "formulas"], "thinking": false}}
+     ]},
+    {"pages": [2, 6, 13, 14],
+     "reason": "probe: cols=2, gutter measured at x≈300 — flat layer interleaves columns",
+     "steps": [
+       {"op": "page_raster", "params": {"dpi": 165}},
+       {"op": "vl_extract", "params": {"tasks": ["layout", "ocr"], "thinking": true}}
+     ]}
+  ]
+}
+```
+
+Write the `reason` from the probe output. A plan whose reasons do not match the
+evidence is how a pipeline drifts.
+
+## Cost discipline
+
+Escalation is per page and bounded, and the gate already fires only where the
+deterministic path provably failed. Two more rules:
+
+- **Batch by archetype, not by page.** If twelve pages share `trust=0.15`, they
+  are one decision, not twelve.
+- **Check the cache before spending.** Vision results are cached against page
+  content, operator and parameters, so re-running a corpus costs nothing. If a
+  re-run reports vision calls on unchanged input, something is wrong — report it.
+
+## When the evidence is new
+
+If a page's signals match no archetype — a form, a musical score, a handwritten
+letter, a page whose `cols` estimate is 3 — that is **new evidence, and the
+answer is a new signal or a new operator, not a special case in a branch**:
+
+1. Say what you observed and which signal failed to describe it.
+2. Emit a `request_new_op` step with the page id and the evidence.
+3. Extract that page through the closest existing route so the run still
+   completes, and mark it in the report.
+
+Then the next person adds a *measurable* signal, and every document benefits.
+That is the difference between a system that gets better at documents and one
+that accumulates exceptions.

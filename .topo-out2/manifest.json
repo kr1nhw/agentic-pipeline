@@ -1,0 +1,18 @@
+[
+  {
+    "doc_id": "d96e4483b86dd9f4",
+    "source_path": "dataset/A relation-theoretic result with applications in topological algebra.pdf",
+    "format": "pdf",
+    "bytes": 470221,
+    "sha256": "d96e4483b86dd9f4",
+    "units": 8,
+    "kind": "pdf_page",
+    "probe": {
+      "route": "pdf-born-digital-text",
+      "confidence": 0.8,
+      "reason": "matched 'pdf-born-digital-text' at 0.80"
+    },
+    "pipeline_id": null,
+    "errors": []
+  }
+]
