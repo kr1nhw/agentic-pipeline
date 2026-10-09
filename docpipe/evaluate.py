@@ -616,6 +616,17 @@ def write_evaluation(out_dir: Path, evaluation: dict[str, Any]) -> Path:
     return target
 
 
+def _percent(value: Any) -> str:
+    """Format a ratio that may not exist.
+
+    A recovered run, or one whose every document failed to open, has nothing to
+    average: the aggregate is `None`, and `f"{None:.1%}"` raises inside the
+    summary — turning "there was nothing to measure" into a traceback at the end
+    of an otherwise successful recovery.
+    """
+    return "n/a" if value is None else f"{value:.1%}"
+
+
 def summarize(evaluation: dict[str, Any]) -> str:
     """A short human-readable verdict, for the CLI and the report."""
     totals = evaluation["totals"]
@@ -624,10 +635,10 @@ def summarize(evaluation: dict[str, Any]) -> str:
         f"documents       {totals['documents']}",
         f"pages           {totals['pages']}",
         f"pages flagged   {totals['pages_with_flags']}",
-        f"text recall     {totals['text_recall']:.1%}",
-        f"images accounted {totals['image_accounting']:.1%}",
-        f"tables survived {totals['table_survival']:.1%}",
-        f"SCORE           {totals['score']:.3f}",
+        f"text recall     {_percent(totals.get('text_recall'))}",
+        f"images accounted {_percent(totals.get('image_accounting'))}",
+        f"tables survived {_percent(totals.get('table_survival'))}",
+        f"SCORE           {'n/a' if totals.get('score') is None else format(totals['score'], '.3f')}",
     ]
     if totals.get("flag_counts"):
         lines.append("")

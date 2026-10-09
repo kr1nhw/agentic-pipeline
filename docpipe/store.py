@@ -94,6 +94,89 @@ class ParquetStream:
         self.close()
 
 
+SHARDS = "shards"
+
+
+def shard_dir(out_dir: Path) -> Path:
+    path = out_dir / SHARDS
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_shard(out_dir: Path, doc_id: str, page_rows: Sequence[dict[str, Any]], block_rows: Sequence[dict[str, Any]]) -> None:
+    """Write one document's rows as files that are complete the moment they exist.
+
+    The run's `pages.parquet` and `blocks.parquet` are streams: their footer is
+    written at close, so a process killed by a segfault — or an OOM, or a full
+    disk — leaves files that contain every byte of finished work and no way to
+    read any of it. Measured: a 357-page issue segfaulted PDFium on the 16th
+    document of a corpus run and took 15 completed documents with it.
+
+    These shards are merged by `docpipe recover`, and are cheap: one small file
+    pair per document, written once.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    target = shard_dir(out_dir)
+    pq.write_table(pa.Table.from_pylist(page_rows, schema=page_schema()), target / f"{doc_id}.pages.parquet", compression="zstd")
+    pq.write_table(pa.Table.from_pylist(block_rows, schema=block_schema()), target / f"{doc_id}.blocks.parquet", compression="zstd")
+    write_json(target / f"{doc_id}.done", {"doc_id": doc_id, "pages": len(page_rows), "blocks": len(block_rows)})
+
+
+def recover(out_dir: Path) -> dict[str, int]:
+    """Rebuild the run's artifacts from per-document shards.
+
+    For a run that died mid-document, this is the difference between "the output
+    is a corrupt parquet file" and "fifteen documents are readable and the
+    sixteenth is missing". Returns counts of what was recovered.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    target = out_dir / SHARDS
+    pages = sorted(target.glob("*.pages.parquet"))
+    blocks = sorted(target.glob("*.blocks.parquet"))
+    if not pages:
+        raise FileNotFoundError(f"no shards in {target}")
+
+    page_tables = [pq.read_table(path) for path in pages]
+    block_tables = [pq.read_table(path) for path in blocks if path.stat().st_size]
+    merged_pages = pa.concat_tables(page_tables) if page_tables else pa.Table.from_pylist([], schema=page_schema())
+    merged_blocks = pa.concat_tables(block_tables) if block_tables else pa.Table.from_pylist([], schema=block_schema())
+    pq.write_table(merged_pages, out_dir / "pages.parquet", compression="zstd")
+    pq.write_table(merged_blocks, out_dir / "blocks.parquet", compression="zstd")
+
+    documents = []
+    progress = out_dir / "documents.jsonl"
+    if progress.is_file():
+        for line in progress.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                documents.append(json.loads(line))
+
+    # The manifest is written at the END of a run, so a crashed run has none — and
+    # the evaluator resolves each document's source through it, which left every
+    # recovered document reporting "source file is gone" and nothing measured.
+    # The progress rows carry the same fields, so the manifest can be rebuilt.
+    if documents:
+        manifest = [
+            {
+                "doc_id": row.get("doc_id"),
+                "source_path": row.get("source_path"),
+                "format": row.get("format"),
+                "bytes": 0,
+                "sha256": row.get("doc_id"),
+                "units": row.get("units", 0),
+                "kind": "",
+                "pipeline_id": row.get("pipeline_id"),
+            }
+            for row in documents
+            if row.get("doc_id") and row.get("source_path")
+        ]
+        write_json(out_dir / MANIFEST, manifest)
+    return {"documents": len(documents), "pages": merged_pages.num_rows, "blocks": merged_blocks.num_rows}
+
+
 def page_schema() -> Any:
     import pyarrow as pa
 

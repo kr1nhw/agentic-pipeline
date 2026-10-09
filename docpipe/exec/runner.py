@@ -185,6 +185,7 @@ class Runner:
                         errors=[f"{type(exc).__name__}: {exc}"],
                     )
                 docs.append(doc_report)
+                self._write_progress(jobs, docs, started, finished=None)
         finally:
             page_stream.close()
             block_stream.close()
@@ -208,6 +209,45 @@ class Runner:
         )
         store.write_json(self.config.out_dir / store.REPORT, report.model_dump(mode="json"))
         return report
+
+    def _write_progress(
+        self,
+        jobs: list[DocumentJob],
+        docs: list[DocReport],
+        started: Any,
+        finished: Any,
+    ) -> None:
+        """Rewrite the run report with whatever has finished so far.
+
+        A run that dies — a segfault in a native library, an OOM kill, a full disk —
+        cannot write its report afterwards, so a report written only at the end does
+        not exist in exactly the case where someone needs to know what completed.
+        The marker is cleared only on a clean finish, so a stale report says so
+        instead of looking like a complete one.
+        """
+        try:
+            report = store.summarize_report(
+                version=__version__,
+                api_version=API_VERSION,
+                docs=docs,
+                started=started,
+                finished=finished or store.RunReport.now(),
+                budget={**self.budget.snapshot(), "cache": self.cache.stats()},
+                plugins=self.registry.plugin_summary(),
+                model=getattr(self.config, "model", None) if self.config.model_enabled else None,
+                offline=not self.config.model_enabled,
+                engine=self.config.engine,
+                shard=self.config.shard,
+                stopped_reason=(
+                    self._stopped
+                    or self.budget.stopped_reason
+                    or f"IN PROGRESS: {len(docs)} of {len(jobs)} documents finished; "
+                    "this file is rewritten as each document completes"
+                ),
+            )
+            store.write_json(self.config.out_dir / store.REPORT, report.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001 - progress reporting must never stop a run
+            self.log("progress_write_failed", error=f"{type(exc).__name__}: {exc}")
 
     # ── sharding ────────────────────────────────────────────────────────────
 
@@ -468,12 +508,20 @@ class Runner:
             if not chunks:
                 chunks = self._chunk_pages(job, plan, records)
 
-        for record in records:
-            page_stream.write(store.page_row(record))
-            for row in store.block_rows(record):
-                block_stream.write(row)
+        page_rows = [store.page_row(record) for record in records]
+        block_rows = [row for record in records for row in store.block_rows(record)]
+        for row in page_rows:
+            page_stream.write(row)
+        for row in block_rows:
+            block_stream.write(row)
         page_stream.flush()
         block_stream.flush()
+        # A parquet file is unreadable until its footer is written, so a process
+        # killed mid-run leaves `pages.parquet` with data in it and no way to read
+        # any of it — 15 documents of finished work, gone, because the 16th
+        # segfaulted. Each document also gets a small, complete file of its own,
+        # which `docpipe recover` can merge back into the run artifacts.
+        store.write_shard(self.config.out_dir, job.doc_id, page_rows, block_rows)
 
         document = self._document_record(job)
         document.pipeline_id = plan.pipeline_id or ("degraded" if plan.plan_degraded else None)
@@ -483,6 +531,7 @@ class Runner:
             store.append_jsonl(store.doc_dir(self.config.out_dir, job.doc_id) / "chunks.jsonl", chunks)
 
         report = self._doc_report(job, plan, records, chunks, started)
+        store.append_jsonl(self.config.out_dir / "documents.jsonl", [report.model_dump(mode="json")])
         self.log(
             "document_done",
             doc_id=job.doc_id,

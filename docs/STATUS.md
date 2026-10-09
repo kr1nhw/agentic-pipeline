@@ -289,8 +289,54 @@ None of this affects the extraction runtime, which does not need the harness.
 | Running-head threshold collapsed to 2 pages | a two-slide deck lost its placeholder text from both slides |
 | The sequential window path had no failure isolation | the pooled path caught a failing window and the single-window path did not, so a file that vanished mid-document exited 1 with 40 of 80 pages unread |
 
+### A crash no longer takes the finished work with it
+
+The corpus run died twice at the same place with **exit 139 — SIGSEGV**, not OOM
+(`OOMKilled=false`, 45-66 MiB peak against a 24 GiB limit), while extracting the
+357-page Federal Register as the 16th document. The same document completes alone
+in 278 s, so the trigger is the document in sequence rather than the document. It
+is reproducible and is the next thing to fix.
+
+What it exposed is arguably worse than the crash: **15 completed documents became
+unreadable**, because `pages.parquet` is written as a stream and parquet cannot be
+read without its footer. Two changes now make a fatal crash survivable:
+
+- every document also writes a small, complete shard (`shards/<doc_id>.pages.parquet`),
+  and each finished document is appended to `documents.jsonl` as it completes;
+- the run report is rewritten after every document, marked `IN PROGRESS` until the
+  run finishes cleanly — so a stale report says it is stale instead of looking
+  complete.
+
+`docpipe recover --out <dir>` merges the shards back into `pages.parquet` and
+`blocks.parquet`, and the evaluator then judges the documents that did finish.
+
+### Extraction quality did not move backwards
+
+Comparing the same 13 documents and 137 pages, evaluated by the same evaluator
+against the older and the current code:
+
+| on 137 shared pages | earlier | current |
+| --- | --- | --- |
+| pages flagged | 32 | **31** |
+| text recall | 0.9987 | **0.9991** |
+| `text_lost` | 1 | **0** |
+| `garbled` | 3 | 3 |
+
+The wider comparison is not valid and was worth checking for exactly that reason:
+the recovered subset is 268 pages and the earlier full run 571, so per-page flag
+counts differ because the page sets differ. Flag rates must be compared on the
+same pages.
+
 ## Open findings
 
+- **Thirty-one pages report `table_missing`** — a table the evaluator can see in
+  the source that produced no table block. Unchanged by this round's work (32
+  before), and the largest remaining content-quality gap.
+- **PDFium segfaults on a large document when it is not the first one read.**
+  Exit 139 with no Python traceback, reproducibly, on a 357-page issue as the
+  16th document; the same document alone succeeds. PDFium is not thread-safe and
+  the run uses a thread pool over page windows, so a leaked worker from an earlier
+  document is the likeliest source. `docpipe recover` now limits the damage.
 - **IRS forms are refused.** `f1040.pdf` (2 units) and `f1120.pdf` (6 units) fail
   the gate on every page while carrying full text. Forms are the one archetype in
   the corpus with no working path: boxed fields, checkboxes and instructions that

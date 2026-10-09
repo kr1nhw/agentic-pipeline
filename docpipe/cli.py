@@ -285,6 +285,28 @@ def cmd_pipelines(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Merge per-document shards into a run's artifacts after an interrupted run."""
+    from docpipe import store
+
+    out_dir = Path(args.out)
+    progress = out_dir / "documents.jsonl"
+    try:
+        counts = store.recover(out_dir)
+    except FileNotFoundError as exc:
+        print(f"nothing to recover: {exc}", file=sys.stderr)
+        return 1
+
+    finished = 0
+    if progress.is_file():
+        finished = sum(1 for line in progress.read_text(encoding="utf-8").splitlines() if line.strip())
+    print(f"recovered {counts['pages']} pages and {counts['blocks']} blocks from shards", file=sys.stderr)
+    print(f"{finished} document(s) had finished before the run stopped", file=sys.stderr)
+    print(f"wrote {out_dir / 'pages.parquet'} and {out_dir / 'blocks.parquet'}", file=sys.stderr)
+    print("run `docpipe evaluate --out <dir>` to judge what was recovered", file=sys.stderr)
+    return 0
+
+
 def cmd_evaluate(args: argparse.Namespace) -> int:
     """Judge a finished run: what was in the source, what came out, what was lost."""
     from docpipe.agent.vl import Budget, VLClient
@@ -484,6 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
     pipelines.add_argument("action", choices=["list", "show", "validate"], nargs="?", default="list")
     pipelines.add_argument("id", nargs="?", default=None)
 
+    recover = sub.add_parser(
+        "recover",
+        help="rebuild a run's artifacts from per-document shards after a crash",
+    )
+    recover.add_argument("--out", required=True, help="the run's output directory")
+
     evaluate = sub.add_parser("evaluate", help="judge a finished run for lost or wrong content")
     evaluate.add_argument("--out", required=True, help="the run's output directory")
     evaluate.add_argument(
@@ -523,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         "ops": cmd_ops,
         "pipelines": cmd_pipelines,
         "evaluate": cmd_evaluate,
+        "recover": cmd_recover,
         "plugin": cmd_plugin,
     }
     try:

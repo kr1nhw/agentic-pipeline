@@ -747,3 +747,80 @@ def test_font_report_is_computed_once_per_session(tmp_path: Path, monkeypatch: p
     assert session._font_report is not None, "the report must be cached after the first call"
     assert session.font_report() is first, "a later call must return the cached report"
     assert len(calls) == 1, f"pdffonts ran {len(calls)} times for one document"
+
+
+def test_an_interrupted_run_can_be_recovered_from_shards(tmp_path: Path, registry: Registry) -> None:
+    """A process killed mid-run must not take the finished documents with it.
+
+    `pages.parquet` is a stream: parquet is unreadable without its footer, so a
+    process that dies — a segfault inside a native library, an OOM kill — leaves a
+    file containing every byte of finished work and no way to read any of it.
+    Measured: a 357-page issue segfaulted PDFium as the 16th document of a corpus
+    run, and 15 completed documents became unreadable.
+
+    Each document now also writes a small complete shard, the run report is
+    rewritten as documents finish, and `recover` merges the shards back.
+    """
+    from docpipe import store
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    (corpus / "one.txt").write_text("alpha beta gamma\n" * 40, encoding="utf-8")
+    (corpus / "two.txt").write_text("delta epsilon zeta\n" * 40, encoding="utf-8")
+    out = tmp_path / "out"
+    config = Config(in_dir=corpus, out_dir=out, work_dir=tmp_path / "work", offline=True, workers=1)
+    Runner(config, registry).run([corpus])
+
+    assert (out / "documents.jsonl").is_file(), "each finished document must be recorded as it completes"
+    rows = [line for line in (out / "documents.jsonl").read_text().splitlines() if line.strip()]
+    assert len(rows) == 2, f"expected one progress row per document, got {len(rows)}"
+    assert len(list((out / store.SHARDS).glob("*.pages.parquet"))) == 2, "one page shard per document"
+
+    # Simulate the crash: the streamed artifacts are unreadable, the shards are not.
+    (out / "pages.parquet").write_bytes(b"truncated, no footer")
+    (out / "blocks.parquet").write_bytes(b"truncated, no footer")
+    counts = store.recover(out)
+
+    assert counts["documents"] == 2
+    assert counts["pages"] == 2, f"both documents must come back: {counts}"
+    # The evaluator resolves each source through the manifest, and a crashed run
+    # never wrote one: without this every recovered document reports "source file
+    # is gone" and nothing is measured.
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert len(manifest) == 2
+    assert all(Path(entry["source_path"]).is_file() for entry in manifest)
+    assert counts["blocks"] >= 2
+    import pyarrow.parquet as pq
+
+    recovered = pq.read_table(out / "pages.parquet").to_pylist()
+    assert {row["doc_id"] for row in recovered} == {row["doc_id"] for row in recovered}
+    assert all(row["text_layer_chars"] > 0 for row in recovered)
+
+
+def test_summarize_reports_a_run_with_nothing_to_measure() -> None:
+    """A recovered or empty run has no aggregates, and that is not a crash.
+
+    `f"{None:.1%}"` raised inside the summary, so `docpipe evaluate` printed a
+    traceback at the very end of a successful recovery — the one path where the
+    user most needs to be told what happened.
+    """
+    from docpipe.evaluate import summarize
+
+    text = summarize(
+        {
+            "totals": {
+                "documents": 0,
+                "pages": 0,
+                "pages_with_flags": 0,
+                "text_recall": None,
+                "image_accounting": None,
+                "table_survival": None,
+                "score": None,
+                "flag_counts": {},
+            },
+            "documents": [],
+        }
+    )
+    assert "n/a" in text
+    assert "SCORE" in text
