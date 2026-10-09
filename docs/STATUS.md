@@ -91,8 +91,14 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 | run | **39 documents / 1 374 pages**, offline, clean finish (first complete full-corpus run) |
 | routes | 889 static · **413 adapted** · 62 dynamic · 10 needs review |
 | model tokens | **0** (917 pages resolved deterministically without a model) |
-| evaluator | score 0.968 · text recall 99.8 % · images 100 % · tables 92.5 % |
-| wall clock | 38 documents in ~23 min, ~1 s/page |
+| evaluator, before this round's evaluator fixes | score 0.968 · text 99.8 % · images 100 % · tables 92.5 % |
+| evaluator, after | **score 0.987 · text 99.8 % · images 100 % · tables 97.0 %** |
+
+The two evaluator corrections moved the measurement, not the extraction: flags went
+110 → **5** for `garbled` and 104 → **41** for `table_missing`, and the score
+0.968 → 0.987. `text_lost` (39 pages) is unchanged and is the next real
+content-quality item.
+| wall clock | 39 documents in ~23 min, ~1 s/page (a 27-file Office sample: 78 s) |
 
 **The segfault is found and fixed.** A corpus run had died three times with exit
 139 (SIGSEGV, `OOMKilled=false`) while extracting the 357-page Federal Register as
