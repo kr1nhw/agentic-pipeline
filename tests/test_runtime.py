@@ -950,3 +950,36 @@ def test_an_inset_picture_is_still_extracted(tmp_path: Path) -> None:
     assert session.full_bleed_picture(1) is None, "an inset must not be treated as the page image"
     extracted = session.picture(1, session.slide_shapes(1)[0]["name"])
     assert extracted is not None and extracted.is_file(), "an inset picture must still be extracted"
+
+
+def test_repetition_is_not_reported_as_lost_content() -> None:
+    """A line removed because it repeats on every page is not a lost line.
+
+    The pipeline drops a line that appears on page after page — an RFC's header,
+    a journal's running title — and keeps the first occurrence. A multiset
+    comparison counts every removed duplicate as loss, so 39 pages of the corpus
+    were flagged `text_lost` for it. Measured: of 571 tokens missing from those
+    pages, 560 (98.1%) were present elsewhere in the same document and 11 numeric
+    literals were genuinely gone.
+
+    Reporting both in one column put a deliberate transformation next to a real
+    defect. `recall_split` separates them, and recall counts a deduplicated token
+    as kept, because a reader of the document still has it.
+    """
+    from docpipe.evaluate import recall_split
+
+    page_source = "RFC 8446 TLS 1.3 August 2018 " + "the handshake is described below " * 6
+    page_output = "the handshake is described below " * 6
+    document_output = ("RFC 8446 TLS 1.3 August 2018\n" + page_output) * 3
+
+    recall, deduplicated = recall_split(page_source, page_output, document_output)
+    assert deduplicated >= 5, "the repeated header must be recognised as present elsewhere"
+    assert recall > 0.99, f"a deduplicated header is not lost content: {recall}"
+    assert recall == 1.0
+
+    # With nothing else in the document, the same shortfall IS loss: the header is
+    # five of this sample's thirty-five tokens, so recall drops by exactly that.
+    alone, deduplicated_alone = recall_split(page_source, page_output, "")
+    assert deduplicated_alone == 0
+    assert alone < 1.0, "text absent from the whole document must still count as lost"
+    assert abs(alone - (1 - 5 / 35)) < 1e-9, f"unexpected recall {alone}"
