@@ -352,10 +352,17 @@ class PdfSession(BaseSession):
         'l' is taller than an 'a' — so a box-height histogram is noise, while a
         font-size histogram is a handful of clean buckets.
         """
-        page = self._pdf[page_no - 1]
+        # The page load is a PDFium call (FPDF_LoadPage) and used to sit outside
+        # the lock, one line above it. Every other page load in this file holds
+        # the lock; this one did not, and it is on the path that the column
+        # escalation takes — so two window threads on one large document could be
+        # inside PDFium at once. That is the shape of the crash it produced:
+        # SIGSEGV with no Python traceback (exit 139), reproducibly on a 357-page
+        # document with two windows, never on a document processed alone.
         textpage = None
         try:
             with _PDFIUM_LOCK:
+                page = self._pdf[page_no - 1]
                 textpage = page.get_textpage()
                 count = textpage.count_chars()
                 get_font_size = _font_size_fn()
@@ -1116,13 +1123,20 @@ def detect_encryption(path: Path) -> dict[str, Any]:
     import pypdfium2 as pdfium
 
     try:
-        pdf = pdfium.PdfDocument(str(path))
+        # Locked like every other PDFium call. This helper is currently unused,
+        # which makes it a trap rather than a hazard: the next caller would find
+        # an unlocked document open sitting in a module whose whole design is
+        # that PDFium is touched from one thread at a time.
+        with _PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(str(path))
     except Exception as exc:  # noqa: BLE001
         return {"openable": False, "error": f"{type(exc).__name__}: {exc}"}
     try:
-        return {"openable": True, "pages": len(pdf)}
+        with _PDFIUM_LOCK:
+            return {"openable": True, "pages": len(pdf)}
     finally:
-        pdf.close()
+        with _PDFIUM_LOCK:
+            pdf.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Line assembly

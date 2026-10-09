@@ -824,3 +824,34 @@ def test_summarize_reports_a_run_with_nothing_to_measure() -> None:
     )
     assert "n/a" in text
     assert "SCORE" in text
+
+
+def test_no_pdfium_call_is_made_outside_the_lock() -> None:
+    """PDFium is not thread-safe, and the runner pools threads over page windows.
+
+    One unlocked call is enough to segfault the process with no Python traceback.
+    That happened: `page_lines` loaded its page one line above the lock, on the
+    path the column escalation takes, and a 357-page document with two window
+    threads died with exit 139 while the same document alone succeeded.
+
+    `self._pdf[page_no - 1]` is `FPDF_LoadPage` through `__getitem__`: it has no
+    parentheses, so a checker that only walks call nodes never sees it. This runs
+    the checker over every module that touches PDFium.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("check_pdfium_lock", root / "tools" / "check_pdfium_lock.py")
+    assert spec and spec.loader
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    modules = sorted((root / "docpipe").rglob("*.py"))
+    checked = 0
+    for module in modules:
+        if "pdfium" not in module.read_text(encoding="utf-8", errors="ignore"):
+            continue
+        checked += 1
+        assert checker.main(str(module)) == 0, f"unlocked PDFium access in {module}"
+    assert checked >= 1, "the checker found no module that uses PDFium, which cannot be right"
