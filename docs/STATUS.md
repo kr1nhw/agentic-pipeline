@@ -388,11 +388,19 @@ same pages.
 - **Thirty-one pages report `table_missing`** — a table the evaluator can see in
   the source that produced no table block. Unchanged by this round's work (32
   before), and the largest remaining content-quality gap.
-- **Forms report `tables 0 %`.** `f1040` and `f1120` are grids of boxes and the
+- **Office pictures are linked, not read.** The evaluator's `image_unaccounted`
+  flags on decks are correct by design: a figure block that points at a file has
+  not been read. The vision path is the remedy, and offline runs leave them for
+  review. What this round fixed is that the bytes were missing entirely for slides
+  holding more than one picture.
+- **`text_lost` on 39 pages** survives this round's fixes; it is the next
+  content-quality item after the tables.
+- **Forms report partial table survival.** `f1040` and `f1120` are grids of boxes and the
   evaluator expects the grid, but most of a form's cells are empty by design and
   the acceptance rule rejects tables that are more than 60 % empty. Whether a form
   should produce a table block, a set of field blocks, or both is an open design
-  question, not a bug to patch.
+  question, not a bug to patch. `f1040` moved from 0 % to 50 % table survival
+  once the evaluator applied the operator's own acceptance rule.
 - **IRS forms are refused.** `f1040.pdf` (2 units) and `f1120.pdf` (6 units) fail
   the gate on every page while carrying full text. Forms are the one archetype in
   the corpus with no working path: boxed fields, checkboxes and instructions that
