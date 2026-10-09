@@ -238,10 +238,15 @@ None of this affects the extraction runtime, which does not need the harness.
   wrap around them. The next round should establish whether the gate is right and
   the content is genuinely not extractable as prose, or the reader is wrong.
 - **Parallelism stops at one core on large documents.** PDFium access is
-  serialised by a lock and a window maps to a session, so a 300-page document runs
-  effectively single-threaded (`docker stats` showed 99.9 % with `--cpus 10`).
-  Wall-clock for the corpus is now ~0.9 s/page, so this is a throughput ceiling
-  rather than a bug, and it is the thing to fix before multi-GB inputs.
+  serialised by a lock and a window maps to a session, so a large document runs
+  effectively single-threaded: the Federal Register (357 pages, 6 MB) held
+  **99.9 % of one core while using 45 MiB** with `--cpus 12 --memory 24g`, which
+  rules out both memory pressure and thread starvation and leaves the lock. The
+  probe is also O(pages) before any extraction starts, since it enumerates and
+  profiles every page and only then samples. Wall-clock elsewhere is ~0.7-0.9
+  s/page (US Code 249 pages in 170 s; Congressional Record 51 pages in 43 s), so
+  this is a throughput ceiling rather than a correctness bug, and it is what to
+  fix before multi-GB inputs.
 
 ## Next three actions
 
