@@ -1101,3 +1101,37 @@ def test_replacing_a_pages_text_keeps_its_tables() -> None:
     orders = [item.order for item in record.blocks]
     assert len(set(orders)) == len(orders), f"duplicate orders: {orders}"
     assert orders == sorted(orders)
+
+
+def test_parallel_evaluation_matches_sequential(tmp_path: Path, registry: Registry) -> None:
+    """Evaluating documents in parallel must change the clock, not the numbers.
+
+    Table detection is the expensive part of evaluation — 43 s of a 52 s evaluation
+    over 98 pages — and it is pure Python walking vector objects, so it scales with
+    cores. A 3 200-page corpus evaluated in one thread ran for over ninety minutes.
+    Documents are independent: each opens its own session and nothing is shared but
+    the artifacts being read.
+
+    Parallelism that changes results is worse than no parallelism, so this compares
+    the two directly on the same run.
+    """
+    from docpipe.evaluate import evaluate_run
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    for index in range(3):
+        body = "Title\n\n" + (f"paragraph {index} with several words in it. " * 40) + "\n"
+        (corpus / f"doc{index}.txt").write_text(body + "Column A | Column B\n1 | 2\n3 | 4\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    base = Config(in_dir=corpus, out_dir=out, work_dir=tmp_path / "work", offline=True, workers=1)
+    Runner(base, registry).run([corpus])
+
+    sequential = evaluate_run(out, registry, Config(out_dir=out, work_dir=tmp_path / "w1", offline=True, workers=1))
+    parallel = evaluate_run(out, registry, Config(out_dir=out, work_dir=tmp_path / "w2", offline=True, workers=4))
+
+    assert sequential["totals"]["documents"] == parallel["totals"]["documents"] == 3
+    assert sequential["totals"]["pages"] == parallel["totals"]["pages"]
+    assert sequential["totals"]["score"] == parallel["totals"]["score"]
+    assert [doc["doc_id"] for doc in sequential["documents"]] == [doc["doc_id"] for doc in parallel["documents"]]

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from concurrent import futures
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -214,6 +215,34 @@ def source_facts(session: Any, page_no: int, kind: str) -> dict[str, int]:
     return facts
 
 
+def table_check_skipped(session: Any, page_no: int) -> str:
+    """Would the extraction operator decline to look for tables on this page?
+
+    Returns the reason, or an empty string. The evaluator must apply the same
+    guards the operator applies, for two reasons and neither is cosmetic:
+
+    * **The measurement.** Counting a table the pipeline deliberately did not look
+      for, on a page it declined by design, reports a defect that is really a cost
+      decision — and hides the decision, which is the thing worth reviewing.
+    * **The wall clock.** Table detection is the expensive part of evaluation:
+      measured on 98 pages, 43 s of 52 s. The pages the operator declines are the
+      ones with tens of thousands of vector objects, i.e. the slowest pages to
+      detect on. An evaluation of a 3 200-page corpus ran for over ninety minutes
+      doing detection on figure-heavy pages to establish expectations for a search
+      that never happens.
+    """
+    try:
+        if hasattr(session, "pdfminer_timed_out") and session.pdfminer_timed_out(page_no):
+            return "pdfminer already exceeded its budget on this page"
+        if hasattr(session, "page_profile"):
+            profile = session.page_profile(page_no)
+            if profile.get("profiled") and profile.get("n_paths", 1) == 0:
+                return "the page has no vector paths"
+        return ""
+    except Exception:  # noqa: BLE001 - an unavailable guard is not a reason to skip
+        return ""
+
+
 def expected_tables(session: Any, page_no: int, kind: str) -> int:
     """Tables the source suggests, on the same terms the run extracts them.
 
@@ -227,11 +256,19 @@ def expected_tables(session: Any, page_no: int, kind: str) -> int:
     """
     if kind != "pdf_page" or not hasattr(session, "plumber_page"):
         return 0
-    from docpipe.ops.struct_ops import table_rows_accepted
+    from docpipe.ops.struct_ops import VECTOR_OBJECT_LIMIT, table_rows_accepted
 
+    if table_check_skipped(session, page_no):
+        return 0
     try:
         page = session.plumber_page(page_no)
         if page is None:
+            return 0
+        # The operator declines pages whose vector count says "figure, not table
+        # grid", because pdfplumber walks every object. Detecting anyway costs the
+        # same walk for a search the run would never perform.
+        vectors = len(page.lines) + len(page.rects) + len(getattr(page, "curves", []))
+        if VECTOR_OBJECT_LIMIT > 0 and vectors > VECTOR_OBJECT_LIMIT:
             return 0
         found = page.find_tables({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
         count = 0
@@ -311,6 +348,12 @@ def evaluate_page(
 
     if check_tables:
         verdict.source_tables = expected_tables(session, record.page_no, record.kind)
+        if verdict.source_tables == 0 and record.kind == "pdf_page":
+            # Say when no expectation could be established, rather than letting a
+            # skipped check read as a page with no tables.
+            reason = table_check_skipped(session, record.page_no)
+            if reason:
+                verdict.notes.append(f"table expectation not established: {reason}")
     verdict.output_tables = sum(1 for block in blocks if block.type == "table")
     if verdict.source_tables and verdict.output_tables < verdict.source_tables:
         verdict.flags.append(
@@ -492,91 +535,37 @@ def evaluate_run(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_doc = {entry["doc_id"]: entry for entry in manifest}
 
-    documents: list[dict[str, Any]] = []
-    all_verdicts: list[PageVerdict] = []
-    for doc_id, rows in _group_by(pages, "doc_id").items():
-        entry = by_doc.get(doc_id, {})
-        source = Path(entry.get("source_path", ""))
-        if not source.is_file():
-            documents.append(
-                {
-                    "doc_id": doc_id,
-                    "source_path": str(source),
-                    "error": "source file is gone; cannot establish expectations",
-                }
-            )
-            continue
+    grouped = list(_group_by(pages, "doc_id").items())
 
-        session = _open_session(source, doc_id, registry, config)
-        verdicts: list[PageVerdict] = []
-        # The whole document's output, so a page can tell "this line was removed
-        # because it repeats on every page" from "this line was lost". Every unit's
-        # assembled text is on its row, so this needs no extra work.
-        document_output = "\n".join((row.get("text") or "") for row in rows)
-        try:
-            ordered = sorted(rows, key=lambda item: item["page_no"])
-            for row in ordered:
-                record = _record_from_row(row)
-                blocks = [block_from_row(item) for item in blocks_by_page.get(record.page_id, [])]
-                verdicts.append(
-                    evaluate_page(
-                        record,
-                        session,
-                        blocks=blocks,
-                        check_tables=check_tables,
-                        document_output=document_output,
-                    )
-                )
-            if vl is not None and judge_sample > 0:
-                _judge_sample(verdicts, ordered, blocks_by_page, session, vl, config, judge_sample)
-        finally:
-            if session is not None:
-                session.close()
-
-        # Document-level recall, as distinct from the per-page average: a document
-        # is read as a whole, and its whole is what a consumer receives.
-        document_recall, _ = recall_split(
-            "\n".join(row.get("text_layer") or "" for row in rows), document_output
+    def evaluate_document(item: tuple[str, list[dict[str, Any]]]) -> tuple[dict[str, Any], list[PageVerdict]]:
+        return _evaluate_document(
+            item,
+            by_doc=by_doc,
+            blocks_by_page=blocks_by_page,
+            registry=registry,
+            config=config,
+            check_tables=check_tables,
+            vl=vl,
+            judge_sample=judge_sample,
         )
 
-        document = {
-            "doc_id": doc_id,
-            "source_path": str(source),
-            "format": entry.get("format"),
-            "pipeline_id": rows[0].get("pipeline_id"),
-            "document_recall": round(document_recall, 4),
-            **score(verdicts),
-            "worst_pages": [
-                v.as_dict() for v in sorted(verdicts, key=lambda v: (v.text_recall, len(v.flags)))[:5] if v.flags
-            ],
-            # Every verdict, including the clean ones: a page the agent judged as
-            # "partial" while the metrics found nothing is the single most
-            # interesting row in this file, and it was being discarded.
-            "pages": [v.as_dict() for v in verdicts],
-        }
-        judged = [v for v in verdicts if v.judge]
-        if judged:
-            # Report skips and errors explicitly. A judge that silently returns
-            # nothing still counts as "judged", and a summary that only tallies
-            # verdicts then shows four zeros with no way to tell a model that
-            # declined from a model that was never called.
-            document["agent_judgement"] = {
-                "judged_pages": len(judged),
-                "verdicts": {
-                    verdict: sum(1 for v in judged if (v.judge or {}).get("verdict") == verdict)
-                    for verdict in ("complete", "partial", "wrong", "unknown")
-                },
-                "skipped": [
-                    (v.judge or {}).get("skipped") or (v.judge or {}).get("error")
-                    for v in judged
-                    if (v.judge or {}).get("skipped") or (v.judge or {}).get("error")
-                ][:5],
-                "pages_flagged_by_agent": [
-                    v.page_id for v in judged if (v.judge or {}).get("verdict") in ("partial", "wrong")
-                ],
-            }
-        documents.append(document)
-        all_verdicts.extend(verdicts)
+    # Documents are independent: each opens its own session, and nothing is shared
+    # but the artifacts being read. Table detection is the expensive part — 43 s of
+    # a 52 s evaluation over 98 pages — and it is pure Python walking vector
+    # objects, so this scales with cores. A 3 200-page corpus evaluated in one
+    # thread ran for over ninety minutes, which is the loop this measurement exists
+    # to shorten. The judge path stays sequential: it spends money, and its budget
+    # is shared.
+    workers = max(1, int(getattr(config, "effective_workers", 1) or 1))
+    results: list[tuple[dict[str, Any], list[PageVerdict]]] = []
+    if workers > 1 and vl is None and len(grouped) > 1:
+        with futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="evaluate") as pool:
+            results = list(pool.map(evaluate_document, grouped))
+    else:
+        results = [evaluate_document(item) for item in grouped]
+
+    documents: list[dict[str, Any]] = [document for document, _ in results]
+    all_verdicts: list[PageVerdict] = [verdict for _, verdicts in results for verdict in verdicts]
 
     total = score(all_verdicts) if all_verdicts else {"score": 0.0}
     return {
@@ -597,6 +586,102 @@ def evaluate_run(
             "flag_counts": total.get("flag_counts", {}),
         },
     }
+
+
+def _evaluate_document(
+    item: tuple[str, list[dict[str, Any]]],
+    *,
+    by_doc: dict[str, dict[str, Any]],
+    blocks_by_page: dict[str, list[dict[str, Any]]],
+    registry: Any,
+    config: Config,
+    check_tables: bool,
+    vl: Any,
+    judge_sample: int,
+) -> tuple[dict[str, Any], list[PageVerdict]]:
+    """Evaluate one document. Independent of every other document by construction."""
+    doc_id, rows = item
+    entry = by_doc.get(doc_id, {})
+    source = Path(entry.get("source_path", ""))
+    if not source.is_file():
+        return (
+            {
+                "doc_id": doc_id,
+                "source_path": str(source),
+                "error": "source file is gone; cannot establish expectations",
+            },
+            [],
+        )
+
+    session = _open_session(source, doc_id, registry, config)
+    verdicts: list[PageVerdict] = []
+    # The whole document's output, so a page can tell "this line was removed
+    # because it repeats on every page" from "this line was lost". Every unit's
+    # assembled text is on its row, so this needs no extra work.
+    document_output = "\n".join((row.get("text") or "") for row in rows)
+    try:
+        ordered = sorted(rows, key=lambda item: item["page_no"])
+        for row in ordered:
+            record = _record_from_row(row)
+            blocks = [block_from_row(item) for item in blocks_by_page.get(record.page_id, [])]
+            verdicts.append(
+                evaluate_page(
+                    record,
+                    session,
+                    blocks=blocks,
+                    check_tables=check_tables,
+                    document_output=document_output,
+                )
+            )
+        if vl is not None and judge_sample > 0:
+            _judge_sample(verdicts, ordered, blocks_by_page, session, vl, config, judge_sample)
+    finally:
+        if session is not None:
+            session.close()
+
+    # Document-level recall, as distinct from the per-page average: a document
+    # is read as a whole, and its whole is what a consumer receives.
+    document_recall, _ = recall_split(
+        "\n".join(row.get("text_layer") or "" for row in rows), document_output
+    )
+
+    document = {
+        "doc_id": doc_id,
+        "source_path": str(source),
+        "format": entry.get("format"),
+        "pipeline_id": rows[0].get("pipeline_id"),
+        "document_recall": round(document_recall, 4),
+        **score(verdicts),
+        "worst_pages": [
+            v.as_dict() for v in sorted(verdicts, key=lambda v: (v.text_recall, len(v.flags)))[:5] if v.flags
+        ],
+        # Every verdict, including the clean ones: a page the agent judged as
+        # "partial" while the metrics found nothing is the single most
+        # interesting row in this file, and it was being discarded.
+        "pages": [v.as_dict() for v in verdicts],
+    }
+    judged = [v for v in verdicts if v.judge]
+    if judged:
+        # Report skips and errors explicitly. A judge that silently returns
+        # nothing still counts as "judged", and a summary that only tallies
+        # verdicts then shows four zeros with no way to tell a model that
+        # declined from a model that was never called.
+        document["agent_judgement"] = {
+            "judged_pages": len(judged),
+            "verdicts": {
+                verdict: sum(1 for v in judged if (v.judge or {}).get("verdict") == verdict)
+                for verdict in ("complete", "partial", "wrong", "unknown")
+            },
+            "skipped": [
+                (v.judge or {}).get("skipped") or (v.judge or {}).get("error")
+                for v in judged
+                if (v.judge or {}).get("skipped") or (v.judge or {}).get("error")
+            ][:5],
+            "pages_flagged_by_agent": [
+                v.page_id for v in judged if (v.judge or {}).get("verdict") in ("partial", "wrong")
+            ],
+        }
+    return document, verdicts
 
 
 def _judge_sample(

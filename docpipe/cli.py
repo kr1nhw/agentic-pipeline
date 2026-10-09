@@ -528,6 +528,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="pages to put in front of the vision model (0 = metrics only)",
     )
     evaluate.add_argument("--fast", action="store_true", help="skip table re-detection")
+    evaluate.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="documents to evaluate concurrently (0 = auto; 1 = sequential)",
+    )
     evaluate.add_argument("--offline", action="store_true")
 
     plugin = sub.add_parser("plugin", help="inspect or validate extensions")
