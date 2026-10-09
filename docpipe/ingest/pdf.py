@@ -326,13 +326,26 @@ class PdfSession(BaseSession):
                 pass
 
         if report["total"]:
-            # A document whose fonts are mostly unembedded AND mostly unmapped is
-            # an OCR text layer, whatever the extraction quality looks like.
+            # EMBEDDEDNESS is the discriminator; a missing ToUnicode map on its own
+            # means nothing.
+            #
+            # The first version of this required both, and a second version weighted
+            # the unicode column -- both were wrong, and the corpus said so. The SQL
+            # standard (1428 pages) has 15 of 16 fonts EMBEDDED but almost no
+            # ToUnicode maps, and extracts flawlessly: "Datatypes / Table 2-4 (Cont.)
+            # / TIMEZONE_MINUTE ... 00 to 59." An embedded font carries its own
+            # glyph data and encoding, so pdffonts' uni column is not evidence of
+            # unreliability. Weighting it flagged all 1428 pages for OCR.
+            #
+            # An UNEMBEDDED font is different in kind: the characters are inferred
+            # from the font name at extraction time, which is exactly what corrupts
+            # the topology paper (emb=no, uni=no) and the 1980s survey.
             unembedded = report["total"] - report["embedded"]
             unmapped = report["total"] - report["unicode_mapped"]
-            report["ocr_like"] = bool(
-                unembedded >= report["total"] * 0.6 and unmapped >= report["total"] * 0.6
-            )
+            report["ocr_like"] = bool(unembedded >= report["total"] * 0.6)
+            report["unicode_like"] = bool(unmapped >= report["total"] * 0.6)
+            report["embedded_ratio"] = round(report["embedded"] / report["total"], 3)
+            report["unicode_ratio"] = round(report["unicode_mapped"] / report["total"], 3)
         self._font_report = report
         return report
 
@@ -435,22 +448,34 @@ class PdfSession(BaseSession):
         and nothing in the text says so.
         """
         report = self.font_report()
-        trust = 1.0
-        if report.get("total"):
-            mapped = report.get("unicode_mapped", 0) / report["total"]
-            embedded = report.get("embedded", 0) / report["total"]
-            # Missing unicode maps are the dominant term: without them the character
-            # identity is inferred from the font name and cannot be checked.
-            trust = min(trust, 0.25 + 0.75 * mapped)
-            trust = min(trust, 0.35 + 0.65 * embedded)
-        if report.get("ocr_like"):
-            trust = min(trust, 0.3)
-            objects = self.page_objects(page_no)
-            # A scanned page carries its raster as a page-sized image; an OCR layer
-            # over one is the strongest evidence that pixels are the better source.
-            if objects.get("images", 0) >= 1:
-                trust = min(trust, 0.15)
-        return round(max(0.0, min(1.0, trust)), 3)
+        # Deliberately a two-state signal, because every graded version of it was
+        # wrong, and each was wrong on a document in this corpus:
+        #
+        #   version 1  required unembedded AND unmapped, graded by both
+        #   version 2  weighted the unicode column   -> flagged all 1428 pages of
+        #              the SQL standard, whose 15-of-16 EMBEDDED fonts extract
+        #              "TIMEZONE_MINUTE ... 00 to 59" flawlessly
+        #   version 3  graded by embeddedness alone  -> flagged Chucky and the
+        #              sigmod tutorial, born-digital documents whose many
+        #              unembedded maths/graphics fonts carry almost no characters
+        #
+        # The lesson is that a ratio of FONT COUNTS is not a proxy for how much of
+        # the TEXT is unreliable: one system font can carry a whole page, and fifty
+        # embedded ones can carry a caption. So this reports distrust only when the
+        # evidence is unambiguous — most fonts unembedded *and* most without unicode
+        # maps — which is the signature of a scan put through an OCR tool:
+        #
+        #   topology paper   emb 0/42, uni 0/42    -> distrust  (confirmed by eye)
+        #   1980s survey     emb 0/12, uni 0/12    -> distrust  (confirmed by eye)
+        #   SQL standard     emb 15/16, uni ~0/16  -> trust
+        #   LaTeX paper      emb 20/54, uni 34/54  -> trust
+        #   slide tutorial   emb 60/249, uni 189/249 -> trust
+        #
+        # The refinement that removes the guesswork is a CHARACTER-weighted ratio,
+        # and the measurement to make first is which fonts actually carry the text.
+        if report.get("ocr_like") and report.get("unicode_like"):
+            return 0.2
+        return 1.0
 
     def page_objects(self, page_no: int) -> dict[str, int]:
         """Count the objects the source page actually contains.
