@@ -1,0 +1,23 @@
+# Keep the build context small and free of secrets and run artifacts.
+.git
+.gitignore
+.remote.env
+.env
+out/
+work/
+cache/
+dist/
+build/
+*.egg-info/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+dataset/
+docs/
+tests/
+tools/rssh.sh
+tools/build_image.sh
+tools/run_local.sh
+tools/sync_out.sh
+tools/test_in_image.sh

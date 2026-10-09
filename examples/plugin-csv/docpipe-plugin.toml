@@ -1,0 +1,14 @@
+# Reference docpipe plugin.
+#
+# It is deliberately dull: a CSV reader that adds a format and one operator. A
+# reference implementation that did something clever would teach the wrong lesson
+# about what a plugin should be — small, streaming, predictable, and honest about
+# what it does not know.
+
+id = "acme-csv"
+version = "1.0.0"
+api_version = "1"
+module = "acme_csv"
+provides = ["format", "op", "pipeline"]
+capabilities = ["filesystem_read"]
+requires_ops = ["text_passthrough"]

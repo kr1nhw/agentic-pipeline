@@ -1,0 +1,13 @@
+# A standalone image: probe it, and transcribe it only when asked.
+id: image-single
+api_version: "1"
+version: "1"
+title: Standalone image
+description: Probe statistics; the vision path is reached through escalation, not by default.
+match:
+  format: image
+  min_confidence: 0.6
+steps:
+  - {op: img_probe, params: {}}
+  - {op: page_raster, params: {dpi: 150}}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

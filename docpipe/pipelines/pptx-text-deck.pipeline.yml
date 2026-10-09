@@ -1,0 +1,19 @@
+# A text deck: titles, bullets, the occasional real table.
+#
+# python-pptx reads the authored structure, so nothing is reconstructed from an
+# image. This is the highest-fidelity path in the whole catalog.
+id: pptx-text-deck
+api_version: "1"
+version: "1"
+title: PowerPoint deck with text content
+description: Shape text in stacking order, native tables, pictures as figures.
+match:
+  format: pptx
+  text_layer_ratio: ">=0.25"
+  min_confidence: 0.6
+steps:
+  - {op: pptx_slide_text, params: {geometry: true}}
+  - {op: office_tables, params: {}}
+  - {op: pptx_pictures, params: {extract: true}}
+assembly: {order: reading_order_v1, drop: []}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

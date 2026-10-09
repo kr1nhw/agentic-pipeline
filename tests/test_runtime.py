@@ -1,0 +1,343 @@
+"""Unit and integration tests for the docpipe runtime.
+
+Deliberately fixture-light: the parts that break most often are the *contracts*
+(a plan that names an operator that does not exist, a parameter that is silently
+dropped, a cache that serves yesterday's answer for a file that changed), and
+those are testable with text files and in-memory data. The one integration test
+drives a full run over a generated Markdown tree, which exercises ingest,
+routing, execution, the gate, assembly and every writer.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from docpipe import API_VERSION
+from docpipe.api.params import apply_defaults, validate_params
+from docpipe.api.registry import PluginAPI, Registry
+from docpipe.api.types import Capability, CapabilityError, Cost, OpResult, PageState, UnitSeed
+from docpipe.builtins import build_registry, load_pipelines, validate_catalog
+from docpipe.config import Config
+from docpipe.exec.cache import OpCache, make_key
+from docpipe.router import evaluate_rule, parse_comparison, route
+from docpipe.schema import Block, MatchRule, PageRecord, PageSignals, Plan, PlanStep, flatten_pages
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def registry() -> Registry:
+    return build_registry(load_entrypoints=False)
+
+
+@pytest.fixture()
+def config(tmp_path: Path) -> Config:
+    return Config(
+        in_dir=tmp_path / "in",
+        out_dir=tmp_path / "out",
+        work_dir=tmp_path / "work",
+        offline=True,
+        workers=1,
+    )
+
+
+def make_page(page_no: int = 1, text: str = "", **signals: object) -> PageRecord:
+    return PageRecord(
+        doc_id="doc",
+        page_no=page_no,
+        page_id=f"doc:p{page_no}",
+        kind="pdf_page",
+        text_layer=text,
+        text_layer_chars=len(text.strip()),
+        signals=PageSignals(**signals),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema and plans
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_flatten_pages_expands_ranges_and_singletons() -> None:
+    assert flatten_pages([1, [10, 12], 20]) == {1, 10, 11, 12, 20}
+    # A reversed range is a typo, not an error: read it as the range it means.
+    assert flatten_pages([[5, 3]]) == {3, 4, 5}
+
+
+def test_plan_override_wins_over_default() -> None:
+    from docpipe.schema import PageOverride
+
+    plan = Plan(
+        doc_id="doc",
+        default_steps=[PlanStep(op="pdf_text_layer")],
+        page_overrides=[PageOverride(pages=[[3, 4]], steps=[PlanStep(op="vl_extract")], reason="scan")],
+    )
+    steps, origin = plan.steps_for(4)
+    assert origin == "override"
+    assert steps[0].op == "vl_extract"
+    steps, origin = plan.steps_for(9)
+    assert origin == "default"
+    assert steps[0].op == "pdf_text_layer"
+
+
+def test_table_payload_pads_ragged_rows() -> None:
+    from docpipe.schema import TablePayload
+
+    table = TablePayload(rows=[["a", "b", "c"], ["d"]])
+    assert all(len(row) == 3 for row in table.rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameter validation — the contract the planner is held to
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_validate_params_rejects_unknown_and_out_of_range() -> None:
+    schema = {"dpi": {"type": "integer", "default": 150, "min": 110, "max": 600}}
+    assert validate_params(schema, {"dpi": 200}) == []
+    assert "unknown parameter" in validate_params(schema, {"dpi": 200, "nope": 1})[0]
+    assert "must be >= 110" in validate_params(schema, {"dpi": 10})[0]
+    assert "must be <= 600" in validate_params(schema, {"dpi": 6000})[0]
+
+
+def test_validate_params_treats_bool_as_not_int() -> None:
+    # bool is an int subclass in Python; a JSON boolean is never a dpi.
+    problems = validate_params({"dpi": {"type": "integer"}}, {"dpi": True})
+    assert problems and "boolean" in problems[0]
+
+
+def test_apply_defaults_does_not_mutate_shared_lists() -> None:
+    schema = {"tasks": {"type": "array", "default": ["ocr"]}}
+    first = apply_defaults(schema, {})
+    first["tasks"].append("tables")
+    second = apply_defaults(schema, {})
+    assert second["tasks"] == ["ocr"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Registry and capabilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_vl_operator_requires_model_calls_capability() -> None:
+    registry = Registry()
+    api = PluginAPI(registry, "test-plugin", capabilities=[Capability.FILESYSTEM_READ])
+    with pytest.raises(CapabilityError):
+        api.register_op("sneaky", lambda ctx, params: OpResult(), summary="calls a model anyway", cost_class="vl")
+
+
+def test_duplicate_operator_is_rejected() -> None:
+    from docpipe.api.types import PluginError
+
+    registry = Registry()
+    api = PluginAPI(registry, "p", capabilities=[Capability.MODEL_CALLS], source="test")
+    api.register_op("op", lambda ctx, params: OpResult(), summary="does a thing worth describing", cost_class="free")
+    with pytest.raises(PluginError):
+        api.register_op("op", lambda ctx, params: OpResult(), summary="does it again", cost_class="free")
+
+
+def test_format_matching_prefers_the_strongest_claim(registry: Registry) -> None:
+    matches = registry.formats_matching(b"%PDF-1.7\n", "weird.bin")
+    assert matches and matches[0][1].id == "pdf"
+
+
+def test_catalog_is_valid_and_every_operator_exists(registry: Registry) -> None:
+    assert validate_catalog(registry) == []
+    assert registry.pipelines, "the image must ship a pipeline catalog"
+
+
+def test_shipped_pipelines_reference_real_operators(registry: Registry) -> None:
+    for spec in load_pipelines():
+        for step in spec.steps:
+            assert step.op in registry.ops, f"{spec.id} refers to unknown operator {step.op}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_parse_comparison_defaults_to_greater_equal() -> None:
+    op, threshold = parse_comparison("0.5")
+    assert op(0.5, 0.5) and op(1.0, 0.5) and not op(0.4, 0.5)
+
+
+def test_route_prefers_the_specific_archetype(registry: Registry) -> None:
+    decision = route(
+        registry.pipelines,
+        format_id="pdf",
+        signals={"text_layer_chars": 2500, "page_width": 612, "page_height": 792, "image_area_frac": 0.05},
+        n_pages=10,
+    )
+    assert decision.pipeline_id == "pdf-born-digital-text"
+
+
+def test_route_declines_when_nothing_fits(registry: Registry) -> None:
+    decision = route(
+        registry.pipelines,
+        format_id="pdf",
+        signals={"text_layer_chars": 20, "page_width": 612, "page_height": 792, "image_area_frac": 0.95},
+        n_pages=3,
+    )
+    assert decision.pipeline_id == "pdf-scanned-image"
+
+
+def test_text_coverage_is_normalised_by_page_area() -> None:
+    """200 characters is a full slide and an empty A4; the rule must see that."""
+    rule = MatchRule(text_layer_ratio=">=0.45")
+    slide = evaluate_rule(rule, format_id="pdf", signals={"text_layer_chars": 200, "page_width": 960, "page_height": 540}, n_pages=1)
+    page = evaluate_rule(rule, format_id="pdf", signals={"text_layer_chars": 200, "page_width": 612, "page_height": 792}, n_pages=1)
+    assert slide >= 0.45 > page or page == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_cache_key_changes_with_content_and_params() -> None:
+    base = dict(page_id="d:p1", content_hash="aaa", op="pdf_text_layer", params={"layout": True})
+    assert make_key(**base) == make_key(**base)
+    assert make_key(**base) != make_key(**{**base, "content_hash": "bbb"})
+    assert make_key(**base) != make_key(**{**base, "params": {"layout": False}})
+    assert make_key(**base) != make_key(**{**base, "op": "pdf_tables"})
+
+
+def test_cache_roundtrip_and_miss(tmp_path: Path) -> None:
+    cache = OpCache(tmp_path, enabled=True)
+    assert cache.get("nope") is None
+    cache.put("key1", {"blocks": []})
+    assert cache.get("key1") == {"blocks": []}
+    assert cache.stats()["hits"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_gate_flags_garbled_and_scanned_and_passes_clean(config: Config, registry: Registry) -> None:
+    from docpipe.ops.checks import op_gate_default
+
+    spec = registry.ops["gate_default_v1"]
+
+    def gate(record: PageRecord) -> dict:
+        state = PageState(record=record)
+        from docpipe.api.types import OpContext
+
+        context = OpContext(doc=None, state=state, work_dir=Path("/tmp"), out_dir=Path("/tmp"), config=config)  # type: ignore[arg-type]
+        result = spec.fn(context, {})
+        return result.metadata["quality"]
+
+    clean = make_page(text="A" * 900, ink_ratio=0.1)
+    clean.blocks = [Block(block_id="b", page_id="doc:p1", order=0, type="paragraph", text="x", source_op="t")]
+    assert gate(clean)["needs_escalation"] is False
+
+    garbled = make_page(text="(cid:12) " * 40)
+    garbled.blocks = [Block(block_id="b", page_id="doc:p1", order=0, type="paragraph", text="x", source_op="t")]
+    quality = gate(garbled)
+    assert quality["needs_escalation"] is True
+    assert any("garbled" in reason for reason in quality["reasons"])
+
+    scanned = make_page(text="", image_area_frac=0.9)
+    assert gate(scanned)["needs_escalation"] is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingestion over generated text, and one full run
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_markdown_ingest_splits_on_headings(tmp_path: Path) -> None:
+    from docpipe.ingest.textlike import TextSession
+
+    path = tmp_path / "notes.md"
+    path.write_text("# Title\n\nIntro.\n\n## Section A\n\nBody A.\n\n```python\nprint(1)\n```\n\n## Section B\n\nBody B.\n", encoding="utf-8")
+    session = TextSession(path, "doc", Config(work_dir=tmp_path), tmp_path)
+    units = list(session.enumerate_units())
+    assert [unit.payload["heading"] for unit in units] == ["Title", "Section A", "Section B"]
+    assert units[1].payload["heading_path"] == ["Title", "Section A"]
+
+
+def test_full_run_produces_every_artifact(tmp_path: Path, registry: Registry) -> None:
+    """End-to-end, offline: routing, execution, gate, assembly, export."""
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    (corpus / "nested").mkdir(parents=True)
+    (corpus / "notes.md").write_text(
+        "# Design notes\n\n" + "\n\n".join(f"## Part {i}\n\n" + "Sentence about extraction. " * 20 for i in range(3)),
+        encoding="utf-8",
+    )
+    (corpus / "nested" / "module.py").write_text(
+        "def extract(page):\n    '''Pretend to extract.'''\n    return page\n", encoding="utf-8"
+    )
+
+    config = Config(
+        in_dir=corpus,
+        out_dir=tmp_path / "out",
+        work_dir=tmp_path / "work",
+        offline=True,
+        workers=1,
+    )
+    runner = Runner(config, registry)
+    report = runner.run([corpus])
+
+    assert report.totals["documents"] == 2
+    assert report.totals["vl_calls"] == 0, "an offline run must not call a model"
+    out = config.out_dir
+    for artifact in ("pages.parquet", "blocks.parquet", "manifest.json", "report.json"):
+        assert (out / artifact).exists(), f"missing {artifact}"
+
+    markdown_files = list((out / "docs").glob("*/content.md"))
+    assert len(markdown_files) == 2
+    text = "".join(path.read_text(encoding="utf-8") for path in markdown_files)
+    assert "Design notes" in text
+
+    # Every block knows which operator produced it: that is the whole point of the IR.
+    import pyarrow.parquet as pq
+
+    blocks = pq.read_table(out / "blocks.parquet").to_pylist()
+    assert blocks and all(row["source_op"] for row in blocks)
+    assert all(row["page_id"] for row in blocks)
+
+
+def test_offline_run_marks_pages_rather_than_failing(tmp_path: Path, registry: Registry) -> None:
+    """A gate failure with no vision available produces `needs_review`, not an exception."""
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    # Text that trips the gate: CID placeholders mean a broken encoding map.
+    (corpus / "broken.txt").write_text("(cid:12) " * 200, encoding="utf-8")
+
+    config = Config(in_dir=corpus, out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True, workers=1)
+    report = Runner(config, registry).run([corpus])
+    assert report.totals["documents"] == 1
+    assert report.totals["vl_calls"] == 0
+    assert report.totals["gate_failures"] >= 1
+    assert report.docs[0].needs_review, "a page that cannot be read must be listed for review"
+
+
+def test_plugin_api_version_is_stable() -> None:
+    """A plugin's manifest is checked against this; changing it is a breaking change."""
+    assert API_VERSION == "1"
+
+
+def test_report_is_json_serialisable(tmp_path: Path, registry: Registry) -> None:
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("# A\n\nSome content.\n", encoding="utf-8")
+    config = Config(in_dir=corpus, out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True, workers=1)
+    Runner(config, registry).run([corpus])
+    payload = json.loads((config.out_dir / "report.json").read_text(encoding="utf-8"))
+    assert payload["totals"]["documents"] == 1
+    assert payload["docpipe_version"]

@@ -1,0 +1,14 @@
+# Markdown and plain text: structure is already explicit.
+id: md-notes
+api_version: "1"
+version: "1"
+title: Markdown or plain text
+description: Pass the unit through, preserving headings and fenced code.
+match:
+  format: [text, md]
+  layout_hint: markdown
+  min_confidence: 0.6
+steps:
+  - {op: text_passthrough, params: {}}
+  - {op: normalize_whitespace, params: {}}
+verify: {gate: gate_default_v1, escalate_to: null, max_escalations: 0}

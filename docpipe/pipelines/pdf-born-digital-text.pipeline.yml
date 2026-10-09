@@ -1,0 +1,26 @@
+# The common case: a PDF that carries its own text.
+#
+# Everything here is exact: the text layer is the file's own characters, the
+# headings come from the file's font sizes, and the tables come from the file's
+# ruling lines. Nothing is inferred from pixels, so this pipeline is both the
+# cheapest and the most accurate option available.
+id: pdf-born-digital-text
+api_version: "1"
+version: "1"
+title: Born-digital PDF with a usable text layer
+description: >
+  Text layer, typographic headings, ruled tables, captions, reading order.
+  Applies to the overwhelming majority of papers, reports and standards.
+match:
+  format: pdf
+  text_layer_ratio: ">=0.45"
+  image_area_frac: "<0.55"
+  min_confidence: 0.6
+steps:
+  - {op: pdf_text_layer, params: {preserve_lines: false, drop_running_heads: true}}
+  - {op: pdf_font_heading_map, params: {size_ratio: 1.12, max_levels: 4}}
+  - {op: pdf_tables, params: {strategy: lines, min_rows: 2, min_cols: 2}}
+  - {op: caption_blocks, params: {}}
+  - {op: reading_order_v1, params: {}}
+assembly: {order: reading_order_v1, drop: [header_footer]}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1, cross_check_sample: 0.0}

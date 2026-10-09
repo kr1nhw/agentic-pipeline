@@ -1,0 +1,19 @@
+# A deck whose slides are single full-bleed pictures.
+#
+# The picture is not an illustration of the slide; it IS the slide. Extracting it
+# gives a page render at the author's own resolution, which is the one Office
+# case where "rasterise the page" is exact rather than an approximation.
+id: pptx-image-slide
+api_version: "1"
+version: "1"
+title: PowerPoint deck of full-slide images
+description: Extract the slide picture as the page render, then transcribe it.
+match:
+  format: pptx
+  text_layer_ratio: "<0.25"
+  image_area_frac: ">=0.6"
+  min_confidence: 0.6
+steps:
+  - {op: pptx_pictures, params: {extract: true}}
+  - {op: pptx_slide_text, params: {geometry: false}}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

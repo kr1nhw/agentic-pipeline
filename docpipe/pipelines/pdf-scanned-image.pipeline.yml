@@ -1,0 +1,24 @@
+# A PDF whose pages are images: the text layer is absent or garbage.
+#
+# The deterministic operators still run first — a surprising number of "scans"
+# carry a usable text layer under a thin image — and the gate escalates the pages
+# that genuinely have none.
+id: pdf-scanned-image
+api_version: "1"
+version: "1"
+title: Scanned or image-only PDF
+description: >
+  No useful text layer. Deterministic operators are attempted first; pages that
+  still fail the gate are transcribed by the vision model at table resolution.
+match:
+  format: pdf
+  text_layer_ratio: "<0.15"
+  min_confidence: 0.6
+steps:
+  - {op: pdf_text_layer, params: {preserve_lines: true}}
+  - {op: reading_order_v1, params: {}}
+verify:
+  gate: gate_default_v1
+  escalate_to: vl_extract
+  max_escalations: 1
+  cross_check_sample: 0.05

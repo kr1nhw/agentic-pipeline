@@ -1,0 +1,18 @@
+# A Word document: flow sections, styled paragraphs, real tables.
+#
+# Word has no page index we can trust, so the unit is a heading-delimited flow
+# section and the document is never paginated by guesswork.
+id: docx-report-tables
+api_version: "1"
+version: "1"
+title: Word document with styled structure
+description: Styled paragraphs and headings, native tables, inline media.
+match:
+  format: docx
+  min_confidence: 0.6
+steps:
+  - {op: docx_paragraphs_styled, params: {lists: true}}
+  - {op: office_tables, params: {}}
+  - {op: docx_media, params: {}}
+assembly: {order: reading_order_v1, drop: []}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

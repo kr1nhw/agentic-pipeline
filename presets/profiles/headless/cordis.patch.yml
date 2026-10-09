@@ -1,0 +1,19 @@
+# Pre-initialised headless profile for this image.
+#
+# WHY THIS FILE IS BAKED IN
+# -------------------------
+# With only the shipped `dsh-base` and `dsh-headless` bundles, `dsh --profile
+# headless "<prompt>"` fails immediately on dsh 0.1.1-rc.2:
+#
+#   Error: dsh: user patch-layer watching requires the Cordis HMR service
+#     at watchUserPatches (…/dsh-app-boot/lib/index.js:764)
+#     at runProfile (…/dsh/lib/profile-boot-*.js:264)
+#
+# `runProfile` watches this patch layer unconditionally, but nothing in the two
+# shipped bundles provides the `hmr` service, so the watch throws before the
+# profile ever boots. Mounting the HMR plugin as a row here supplies it.
+#
+# Baking the profile in also removes the first-run auto-initialisation, which
+# otherwise needs pnpm on PATH at container start.
+- id: hmr
+  name: '@deepseek-ai/cordis-plugin-hmr'

@@ -1,0 +1,12 @@
+# Source code: one unit per file, structure preserved.
+id: code-repo
+api_version: "1"
+version: "1"
+title: Source code file
+description: Emit the file as a code block with its language; no reflowing.
+match:
+  format: code
+  min_confidence: 0.6
+steps:
+  - {op: text_passthrough, params: {}}
+verify: {gate: gate_default_v1, escalate_to: null, max_escalations: 0}

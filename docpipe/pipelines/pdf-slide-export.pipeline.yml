@@ -1,0 +1,18 @@
+# A deck exported to PDF: 16:9 pages laid out as slides, not as text columns.
+#
+# Reading order must not try to find columns here, and tables are usually drawn
+# rather than ruled, so the table strategy changes.
+id: pdf-slide-export
+api_version: "1"
+version: "1"
+title: Slide deck exported to PDF
+description: "16:9 pages: shape-like blocks, drawn tables, no column detection."
+match:
+  format: pdf
+  layout_hint: slide
+  min_confidence: 0.65
+steps:
+  - {op: pdf_text_layer, params: {preserve_lines: true, drop_running_heads: false}}
+  - {op: pdf_tables, params: {strategy: text, min_rows: 2, min_cols: 2}}
+  - {op: caption_blocks, params: {}}
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

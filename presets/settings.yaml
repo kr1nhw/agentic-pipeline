@@ -1,0 +1,22 @@
+# Harness settings baked into the docpipe-agent image.
+#
+# These are HOST-plane facts (the model route is owned by the host composition,
+# not by any preset), which is exactly why they live in the user settings
+# document rather than in presets/docpipe/agent.cordis.yml: a preset cannot pin
+# a model.
+#
+# The default model is the image-capable route. That is what makes the shipped
+# `document-extraction` skill's "look at this page" step work out of the box —
+# a text-only route would reject the image blocks instead.
+#
+# No credential is stored here or anywhere else in the image. The DeepSeek key
+# is resolved per request from the environment (DEEPSEEK_API_KEY) at runtime.
+
+agent-default-model:
+  provider: deepseek-official
+  model: deepseek-v4-flash-vision-exp
+  reasoningEffort: high
+
+# Sessions in the image start as the extraction agent.
+agent-presets:
+  default: docpipe
