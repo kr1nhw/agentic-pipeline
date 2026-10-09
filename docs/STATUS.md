@@ -101,6 +101,20 @@ evaluated end to end:
 | score | **0.990** |
 | flags | 36 — every one `table_missing`, no `garbled`, no `text_lost` |
 
+The whole harvest then ran in one pass, 103 files in 35.4 minutes, clean exit:
+
+| quantity | value |
+| --- | --- |
+| documents / pages | **102 / 3 207** |
+| routes | 2 114 static · **837 adapted** · 208 dynamic · 48 needs review |
+| model tokens | **0** |
+| rejected, correctly | 2 (a `.docm` and a fuzzer artifact) |
+
+3 207 pages of documents the pipeline had never seen, read without a single model
+call, with 837 pages repaired by a deterministic operator after their first plan
+failed their gate, and 48 left for a person. The evaluator is running over the
+whole set.
+
 Two of those zeros are this round's work: the garbling measure and the text-loss
 measure now report what they claim to. The remaining gap is tables, and it is
 consistent across corpora — ACL and EMNLP two-column papers sit at 60–88 % table
