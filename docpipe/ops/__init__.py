@@ -142,6 +142,11 @@ def register_ops(api: PluginAPI) -> None:
         ),
         params_schema={},
         cost_class="local",
+        #: `reading_order` is declared so the runner can find the plan's ordering
+        #: step by what it produces. An operator that replaces a page's prose has
+        #: to be followed by it, or the tables that survive the replacement end up
+        #: sequenced around text that no longer exists.
+        produces=("blocks", "reading_order"),
         requires=("blocks",),
     )
 

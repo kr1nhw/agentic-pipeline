@@ -165,6 +165,12 @@ class OpResult:
         return cls(ok=False, diagnostics=[message])
 
 
+#: Block types that a text-replacement operator supersedes. Structured and visual
+#: blocks are NOT prose: a table, a figure or a caption is not what a text pass
+#: re-reads, so replacing prose must leave them in place.
+PROSE_TYPES = frozenset({"paragraph", "heading", "list"})
+
+
 @dataclass
 class PageState:
     """Mutable working state for one unit as it flows through a plan's steps."""
@@ -187,9 +193,22 @@ class PageState:
         return self.record.blocks
 
     def merge(self, result: OpResult, source_op: str) -> None:
-        """Fold an operator result into this page, preserving block order."""
+        """Fold an operator result into this page, preserving block order.
+
+        `replace_blocks` means "my text supersedes the text on this page", not "the
+        page contains nothing else". It cleared every block, so an operator that
+        re-reads a page in reading order discarded the tables, figures and captions
+        the plan had already extracted — and the pages that take that path are
+        exactly the ones whose plan had found tables.
+
+        Measured on the harvested corpus: 41 pages reported `table_missing`, every
+        one of them on a page whose route was `adapted`. On those pages the table
+        operator had run and reported `tables_found: 1`; the column pass then threw
+        the table away. Content that was never extracted is a coverage gap.
+        Content that was extracted and then discarded is a bug.
+        """
         if result.replace_blocks:
-            self.record.blocks = []
+            self.record.blocks = [block for block in self.record.blocks if block.type not in PROSE_TYPES]
         next_order = max((b.order for b in self.record.blocks), default=-1) + 1
         for block in result.blocks:
             block.order = next_order

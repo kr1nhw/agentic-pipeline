@@ -835,7 +835,22 @@ class Runner:
         if attempt == 1 and "columns" in reasons:
             characters_unreliable = "cannot be trusted" in reasons or "garbled" in reasons
             if not characters_unreliable:
-                return [PlanStep(op="pdf_columns_text", params={}, reason="column reading order")]
+                rung = [PlanStep(op="pdf_columns_text", params={}, reason="column reading order")]
+                # The column pass supersedes the page's PROSE and leaves tables and
+                # figures in place (see PageState.merge), so the page now needs
+                # ordering again: prose written after a table would otherwise be
+                # sequenced behind it. The plan already names the operator that does
+                # this — found by what it produces rather than by its name, so a plan
+                # that orders differently is honoured rather than overruled.
+                for step in plan.default_steps:
+                    try:
+                        spec = self.registry.get_op(step.op)
+                    except DocpipeError:
+                        continue
+                    if "reading_order" in spec.produces:
+                        rung.append(PlanStep(op=step.op, params=dict(step.params), reason="re-order after re-reading"))
+                        break
+                return rung
 
         tasks = ["ocr", "layout"]
         text = reasons

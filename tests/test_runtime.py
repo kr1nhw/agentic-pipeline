@@ -1034,3 +1034,70 @@ def test_a_document_is_read_before_the_next_is_probed(tmp_path: Path, registry: 
     ], events
     manifest = json.loads((out / "manifest.json").read_text())
     assert len(manifest) == 3, "the manifest is still written for every document"
+
+
+def test_replacing_a_pages_text_keeps_its_tables() -> None:
+    """`replace_blocks` supersedes the prose, not the page.
+
+    The column escalation re-reads a multi-column page in reading order and sets
+    `replace_blocks`, which cleared EVERY block on the page — so the tables, figures
+    and captions the plan had already extracted were discarded by the operator that
+    fixed the reading order. The pages that take that path are exactly the pages
+    whose plan had found tables.
+
+    Measured on the harvested corpus: 41 pages reported `table_missing`, every one
+    of them on a page whose route was `adapted`, and on those pages the table
+    operator had recorded `tables_found: 1`. Content never extracted is a coverage
+    gap; content extracted and then thrown away is a bug.
+    """
+    from docpipe.api.types import Block, OpResult, PageState
+    from docpipe.schema import PageRecord, TablePayload
+
+    record = PageRecord(doc_id="doc", page_no=1, page_id="doc:p1", kind="pdf_page")
+    state = PageState(record=record)
+
+    def block(block_id: str, kind: str, text: str) -> Block:
+        return Block(
+            block_id=block_id,
+            page_id="doc:p1",
+            order=0,
+            type=kind,  # type: ignore[arg-type]
+            text=text,
+            source_op="test",
+        )
+
+    # What the plan produced first: prose, then a ruled table.
+    state.merge(OpResult(blocks=[block("a", "paragraph", "body text")]), "pdf_text_layer")
+    state.merge(
+        OpResult(
+            blocks=[
+                Block(
+                    block_id="t",
+                    page_id="doc:p1",
+                    order=0,
+                    type="table",
+                    text="Year | Value",
+                    table=TablePayload(rows=[["Year", "Value"], ["2024", "17"]], n_cols=2),
+                    source_op="pdf_tables",
+                )
+            ]
+        ),
+        "pdf_tables",
+    )
+    assert {item.type for item in record.blocks} == {"paragraph", "table"}
+
+    # The escalation re-reads the page in column order and replaces its text.
+    state.merge(OpResult(blocks=[block("b", "paragraph", "left column")], replace_blocks=True), "pdf_columns_text")
+
+    kinds = [item.type for item in record.blocks]
+    texts = [item.text for item in record.blocks]
+    assert "table" in kinds, f"the column pass discarded the table: {kinds} {texts}"
+    assert "body text" not in texts, "the superseded prose must still be replaced"
+    assert "left column" in texts
+    # Orders stay unique, so assembly has a defined sequence. They need not start
+    # at zero: the surviving table keeps the place it had and the new prose follows
+    # it, and the plan's ordering operator — re-run after this rung — is what puts
+    # the page back into reading order.
+    orders = [item.order for item in record.blocks]
+    assert len(set(orders)) == len(orders), f"duplicate orders: {orders}"
+    assert orders == sorted(orders)
