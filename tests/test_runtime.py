@@ -983,3 +983,54 @@ def test_repetition_is_not_reported_as_lost_content() -> None:
     assert deduplicated_alone == 0
     assert alone < 1.0, "text absent from the whole document must still count as lost"
     assert abs(alone - (1 - 5 / 35)) < 1e-9, f"unexpected recall {alone}"
+
+
+def test_a_document_is_read_before_the_next_is_probed(tmp_path: Path, registry: Registry) -> None:
+    """Preparation must not run ahead of extraction across a whole corpus.
+
+    Probing every document before extracting any of them is a long silent prefix:
+    on a 103-document harvest it was about eight minutes before the first page of
+    output, with every probed document held in memory meanwhile. Extracting a
+    document as soon as it has been probed fixes the prefix, the memory profile
+    and the blast radius of a crash — and it is invisible in the artifacts, so
+    this asserts the ORDER rather than the output.
+    """
+    from docpipe.exec.runner import Runner
+
+    corpus = tmp_path / "in"
+    corpus.mkdir()
+    for index in range(3):
+        (corpus / f"doc{index}.txt").write_text(f"document {index} " * 60, encoding="utf-8")
+
+    out = tmp_path / "out"
+    config = Config(in_dir=corpus, out_dir=out, work_dir=tmp_path / "work", offline=True, workers=1)
+    runner = Runner(config, registry)
+
+    events: list[str] = []
+    original_prepare, original_run = runner._prepare, runner._run_document
+
+    def prepare(path):
+        events.append(f"prepare:{Path(path).name}")
+        return original_prepare(path)
+
+    def run_document(job, page_stream, block_stream):
+        events.append(f"read:{Path(job.path).name}")
+        return original_run(job, page_stream, block_stream)
+
+    runner._prepare = prepare
+    runner._run_document = run_document
+    report = runner.run([corpus])
+
+    assert report.totals["documents"] == 3, "interleaving must not lose documents"
+    # Each document is read before the next one is opened.
+    assert events[:2] == ["prepare:doc0.txt", "read:doc0.txt"], events
+    assert events == [
+        "prepare:doc0.txt",
+        "read:doc0.txt",
+        "prepare:doc1.txt",
+        "read:doc1.txt",
+        "prepare:doc2.txt",
+        "read:doc2.txt",
+    ], events
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert len(manifest) == 3, "the manifest is still written for every document"

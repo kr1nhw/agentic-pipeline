@@ -151,46 +151,87 @@ class Runner:
         if not files:
             self.log("no_inputs", inputs=[str(item) for item in inputs])
 
+        # Preparing a document means probing it: enumerating its units and
+        # profiling a sample. Doing that for the whole corpus before extracting
+        # anything is a long, silent prefix — measured on a 103-document harvest,
+        # about eight minutes before the first page of output, with every
+        # DocumentJob held in memory meanwhile.
+        #
+        # So prepare and extract are interleaved: a document is probed, then read,
+        # then the next is probed. Sharding is the exception — it partitions
+        # (document, window) pairs across processes and needs the whole list first
+        # — so that path prepares everything up front, as it must.
         jobs: list[DocumentJob] = []
-        for path in files:
-            try:
-                job = self._prepare(path)
-            except DocpipeError as exc:
-                self.log("prepare_failed", path=str(path), error=str(exc))
-                continue
-            if job is not None:
-                jobs.append(job)
+
+        def prepare_all() -> list[DocumentJob]:
+            prepared: list[DocumentJob] = []
+            for path in files:
+                try:
+                    job = self._prepare(path)
+                except DocpipeError as exc:
+                    self.log("prepare_failed", path=str(path), error=str(exc))
+                    continue
+                if job is not None:
+                    prepared.append(job)
+            return prepared
 
         if self.config.shard:
-            jobs = self._apply_shard(jobs)
+            jobs = self._apply_shard(prepare_all())
 
         docs: list[DocReport] = []
+        manifest: list[dict[str, Any]] = []
         page_stream = store.ParquetStream(self.config.out_dir / "pages.parquet", store.page_schema())
         block_stream = store.ParquetStream(self.config.out_dir / "blocks.parquet", store.block_schema())
+
+        def consume(job: DocumentJob) -> bool:
+            """Run one prepared document. False means stop the run."""
+            nonlocal docs
+            if self.budget.exhausted:
+                return False
+            try:
+                doc_report = self._run_document(job, page_stream, block_stream)
+            except BudgetExceeded as exc:
+                self._stopped = str(exc)
+                return False
+            except DocpipeError as exc:
+                doc_report = DocReport(
+                    doc_id=job.doc_id,
+                    source_path=str(job.path),
+                    format=job.format_id,
+                    units=job.units,
+                    errors=[f"{type(exc).__name__}: {exc}"],
+                )
+            docs.append(doc_report)
+            self._write_progress(total, len(docs), docs, started, finished=None)
+            return True
+
         try:
-            for job in jobs:
-                if self.budget.exhausted:
-                    break
-                try:
-                    doc_report = self._run_document(job, page_stream, block_stream)
-                except BudgetExceeded as exc:
-                    self._stopped = str(exc)
-                    break
-                except DocpipeError as exc:
-                    doc_report = DocReport(
-                        doc_id=job.doc_id,
-                        source_path=str(job.path),
-                        format=job.format_id,
-                        units=job.units,
-                        errors=[f"{type(exc).__name__}: {exc}"],
-                    )
-                docs.append(doc_report)
-                self._write_progress(jobs, docs, started, finished=None)
+            if self.config.shard:
+                total = len(jobs)
+                for job in jobs:
+                    if not consume(job):
+                        break
+            else:
+                # An upper bound: a file that fails to prepare never becomes a job,
+                # and the progress line says how many of the files have been read.
+                total = len(files)
+                for path in files:
+                    try:
+                        job = self._prepare(path)
+                    except DocpipeError as exc:
+                        self.log("prepare_failed", path=str(path), error=str(exc))
+                        continue
+                    if job is None:
+                        continue
+                    manifest.append(self._document_record(job).model_dump())
+                    if not consume(job):
+                        break
         finally:
             page_stream.close()
             block_stream.close()
 
-        manifest = [self._document_record(job).model_dump() for job in jobs]
+        if self.config.shard:
+            manifest = [self._document_record(job).model_dump() for job in jobs]
         store.write_json(self.config.out_dir / store.MANIFEST, manifest)
 
         report = store.summarize_report(
@@ -212,7 +253,8 @@ class Runner:
 
     def _write_progress(
         self,
-        jobs: list[DocumentJob],
+        total: int,
+        finished_count: int,
         docs: list[DocReport],
         started: Any,
         finished: Any,
@@ -241,7 +283,7 @@ class Runner:
                 stopped_reason=(
                     self._stopped
                     or self.budget.stopped_reason
-                    or f"IN PROGRESS: {len(docs)} of {len(jobs)} documents finished; "
+                    or f"IN PROGRESS: {finished_count} of {total} documents finished; "
                     "this file is rewritten as each document completes"
                 ),
             )
