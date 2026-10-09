@@ -503,7 +503,14 @@ class Runner:
             if not attempt_steps:
                 record.route = "needs_review"
                 break
-            record.route = "vl_assisted" if record.route == "static" else record.route
+            # Label by what produced the content, not by which rung was climbed.
+            # A page fixed by the deterministic column pass involved no model and
+            # is "adapted"; a cached vision answer involved a model but no spend
+            # and stays "vl_assisted" with vl_calls == 0. Collapsing those two
+            # would hide the saving in one direction and overstate it in the other.
+            if record.route in ("static", "dynamic"):
+                record.route = "vl_assisted" if state.scratch.get("vl_step_used") else "adapted"
+        record.attempt = escalations
 
         if record.vl_calls and not record.blocks:
             record.route = "failed"
@@ -546,6 +553,8 @@ class Runner:
             cached = self.cache.get(cache_key)
             if cached is not None and spec.cost_class == "vl":
                 # Never re-buy a vision answer we already have.
+                state.scratch["vl_step_used"] = True
+                state.record.vl_cache_hits += 1
                 self._apply_cached(state, cached, spec.name)
                 continue
 
@@ -568,8 +577,10 @@ class Runner:
                 state.scratch["chunks"] = result.metadata["chunks"]
             if result.metadata.get("quality"):
                 state.record.quality = result.metadata["quality"]
-            if spec.cost_class == "vl" and result.ok:
-                self.cache.put(cache_key, _serialize_result(result))
+            if spec.cost_class == "vl":
+                state.scratch["vl_step_used"] = True
+                if result.ok:
+                    self.cache.put(cache_key, _serialize_result(result))
 
     def _apply_cached(self, state: PageState, cached: dict[str, Any], op: str) -> None:
         """Replay a cached result so a warm run behaves exactly like a cold one.
@@ -646,8 +657,23 @@ class Runner:
         """
         if not plan.verify.escalate_to:
             return []
+        reasons = " ".join(quality.get("reasons", []))
+
+        # Cheapest rung first, and only when it can actually help.
+        #
+        # A page whose sole defect is interleaved columns has correct characters in
+        # the wrong order, which line geometry can fix for free. Buying a model
+        # transcription for it cost 1,806 + 2,096 tokens per page to re-read text we
+        # already had. The gate re-checks the result, so a page this cannot help —
+        # overlapping text streams, a watermark over the body — simply escalates on
+        # the next rung.
+        if attempt == 1 and "columns" in reasons:
+            characters_unreliable = "cannot be trusted" in reasons or "garbled" in reasons
+            if not characters_unreliable:
+                return [PlanStep(op="pdf_columns_text", params={}, reason="column reading order")]
+
         tasks = ["ocr", "layout"]
-        text = " ".join(quality.get("reasons", []))
+        text = reasons
         if "table" in text:
             tasks.append("tables")
         if "image" in text or "garbled" in text:
@@ -783,7 +809,8 @@ class Runner:
             units=len(records),
             route_counts=route_counts,
             gate_failures=gate_failures,
-            escalations=sum(1 for record in records if record.route.startswith("vl")),
+            escalations=sum(1 for record in records if record.attempt > 0),
+            vl_cache_hits=sum(record.vl_cache_hits for record in records),
             vl_calls=sum(record.vl_calls for record in records),
             prompt_tokens=sum(record.prompt_tokens for record in records),
             completion_tokens=sum(record.completion_tokens for record in records),

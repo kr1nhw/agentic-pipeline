@@ -45,6 +45,7 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     chars = len(stripped)
     signals = record.signals
 
+    output_text = " ".join(block.text for block in record.blocks if block.text)
     text_floor = int(params.get("text_floor_chars", getattr(ctx.config, "gate_text_floor_chars", 80)))
     image_fraction = float(getattr(ctx.config, "gate_image_area_frac", SCAN_IMAGE_FRACTION))
 
@@ -124,11 +125,39 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     #    raster and a model, or a layout engine.
     columns = int(getattr(signals, "columns", 1) or 1)
     metrics["columns"] = columns
-    if columns >= 2 and stripped and not vision_sourced and not params.get("columns_handled", False):
+    # `params` is what the PLAN asked for; the signal is what an OPERATOR achieved.
+    # Only the signal can satisfy this, and reading only the params meant a page
+    # whose columns an operator had already separated was still escalated — the
+    # deterministic pass ran, succeeded, and was ignored.
+    if (
+        columns >= 2
+        and stripped
+        and not vision_sourced
+        and not params.get("columns_handled", False)
+        and not getattr(signals, "columns_handled", False)
+    ):
         reasons.append(
             f"page has {columns} text columns; a flat text layer interleaves them and "
             "needs layout-aware extraction"
         )
+
+    # 5. Interleaved text. Two columns read line-by-line, or two text streams drawn
+    #    over each other, produce words that are textually impossible: normal prose
+    #    averages four to six characters per word, while interleaved output yields
+    #    monsters like `brptttimc2shnweeiee0oonpeicdseon1nscrosder8ieesermin`.
+    #    Length is a blunt instrument, but the two distributions do not overlap.
+    words = [word for word in re.findall(r"[A-Za-z]{2,}", output_text)] if output_text else []
+    if len(words) >= 20:
+        lengths = sorted(len(word) for word in words)
+        median_word = lengths[len(lengths) // 2]
+        long_share = sum(1 for length in lengths if length > 20) / len(lengths)
+        metrics["median_word_length"] = median_word
+        metrics["long_word_share"] = round(long_share, 3)
+        if median_word > 12 or long_share > 0.10:
+            reasons.append(
+                f"text looks interleaved (median word {median_word} chars, "
+                f"{long_share:.0%} over 20): the reading order is wrong"
+            )
 
     # 5. Tables that were detected but not extracted.
     candidates = signals.n_table_candidates or 0

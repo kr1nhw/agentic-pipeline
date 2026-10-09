@@ -417,3 +417,80 @@ def test_a_degenerate_office_table_keeps_its_text(tmp_path: Path, registry: Regi
     result = op_office_tables(context, {})
     text = " ".join(block.text for block in result.blocks)
     assert "T2" in text, f"table content was dropped: {text!r}"
+
+
+def test_docx_content_without_rows_is_recovered_not_dropped(tmp_path: Path) -> None:
+    """Text that python-docx cannot model is still content.
+
+    Found on the harvested Office fixtures: a Word file whose tables have cells
+    (`w:tc`) but no rows (`w:tr`). python-docx reports such a table with zero
+    rows, so the row-driven reader collected nothing, the section came out empty,
+    the document's fifteen characters of text reached no block at all, and the
+    gate reported "1 table candidate(s) detected but none extracted". The file
+    was fine; the reader was blind.
+
+    The backstop walks the body for paragraphs the structured pass did not
+    account for, so content survives even when the model of the format does not
+    have a place to put it.
+    """
+    import zipfile
+
+    from docpipe.ingest.office import DocxSession
+
+    # A minimal OOXML document: a table whose cell holds a paragraph, with no
+    # `w:tr` element anywhere. python-docx sees no rows.
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tc><w:p><w:r><w:t>ORPHAN1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>ORPHAN2</w:t></w:r></w:p></w:tc>
+    </w:tbl>
+    <w:p><w:r><w:t>PLAIN</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+"""
+    relationships = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+"""
+    path = tmp_path / "rows-less.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("word/document.xml", document_xml)
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = DocxSession(path, "doc", config, tmp_path / "work")
+    text = "\n".join(session.section_text(index) for index in range(1, len(session.sections()) + 1))
+
+    assert "ORPHAN1" in text, f"cell text was dropped: {text!r}"
+    assert "ORPHAN2" in text, f"cell text was dropped: {text!r}"
+    assert "PLAIN" in text, f"body text was dropped: {text!r}"
+
+
+def test_a_trailing_whitespace_chunk_is_not_a_unit(tmp_path: Path) -> None:
+    """A chunk boundary is not allowed to invent a unit.
+
+    `rfc8446.txt` produced a 57th unit holding a single character — the tail of
+    the split. Nothing could be extracted from it, the gate read that as an
+    unreadable page, and the run reported the document as needing review. The
+    document was fine; the chunker manufactured an empty unit out of a newline.
+    """
+    from docpipe.ingest.textlike import TextSession
+
+    path = tmp_path / "trailing.txt"
+    path.write_text("alpha\n" * 400 + "\n", encoding="utf-8")
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = TextSession(path, "doc", config, tmp_path / "work")
+    for seed in session.enumerate_units():
+        assert seed.text_layer.strip(), f"unit at page {seed.page_no} was created from whitespace alone"

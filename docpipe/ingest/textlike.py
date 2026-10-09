@@ -152,6 +152,13 @@ class TextSession(BaseSession):
                 buffer, size = [], 0
         if buffer:
             chunks.append({"path": [], "heading": None, "text": "\n".join(buffer)})
+        # A chunk that carries no content is not a unit. The tail of a split file
+        # is routinely a stray newline, and calling that a page produced a unit
+        # with one character that no operator could extract anything from — so
+        # the gate flagged the document for review and the review found nothing
+        # wrong with the document. A file with no content at all still yields one
+        # empty unit, because "this file is empty" is a fact worth reporting.
+        chunks = [chunk for chunk in chunks if chunk["text"].strip()]
         return chunks or [{"path": [], "heading": None, "text": ""}]
 
     def units_data(self) -> list[dict[str, Any]]:

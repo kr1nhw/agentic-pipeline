@@ -23,4 +23,5 @@ steps:
   - {op: caption_blocks, params: {}}
   - {op: reading_order_v1, params: {}}
 assembly: {order: reading_order_v1, drop: [header_footer]}
-verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1, cross_check_sample: 0.0}
+# Two rungs: the free column pass, then vision if ordering is still wrong.
+verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 2, cross_check_sample: 0.0}

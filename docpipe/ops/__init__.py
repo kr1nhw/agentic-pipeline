@@ -46,6 +46,21 @@ def register_ops(api: PluginAPI) -> None:
     )
 
     api.register_op(
+        "pdf_columns_text",
+        text_ops.op_pdf_columns_text,
+        summary=(
+            "Extract a multi-column page in reading order by separating the columns from line "
+            "geometry — no model call. Use it for a page whose only defect is that its text "
+            "columns interleave; it cannot help a page whose characters are wrong, and it "
+            "cannot separate overlapping text streams."
+        ),
+        params_schema={},
+        cost_class="free",
+        produces=("blocks",),
+        unit_kinds=("pdf_page",),
+    )
+
+    api.register_op(
         "normalize_whitespace",
         text_ops.op_normalize_whitespace,
         summary=(

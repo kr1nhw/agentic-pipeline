@@ -40,6 +40,8 @@ UnitKind = Literal["pdf_page", "slide", "docx_flow", "text_chunk", "image", "cod
 Route = Literal[
     "static",
     "dynamic",
+    #: Escalated, and resolved by a deterministic operator rather than a model.
+    "adapted",
     "vl_assisted",
     "vl_only",
     "pending",
@@ -156,9 +158,12 @@ class PageRecord(BaseModel):
     route: Route = "pending"
     pipeline_id: str | None = None
     vl_calls: int = 0
+    #: Model-produced content replayed from cache: no spend, but not deterministic.
+    vl_cache_hits: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     usd_est: float = 0.0
+    #: Escalation attempts this unit needed beyond its first plan.
     attempt: int = 0
     duration_ms: int = 0
     errors: list[str] = Field(default_factory=list)
@@ -317,8 +322,11 @@ class DocReport(BaseModel):
     units: int = 0
     route_counts: dict[str, int] = Field(default_factory=dict)
     gate_failures: int = 0
+    #: Units whose first plan failed the gate and needed another attempt.
     escalations: int = 0
     vl_calls: int = 0
+    #: Model-produced units replayed from cache: free, but not deterministic.
+    vl_cache_hits: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     usd_est: float = 0.0

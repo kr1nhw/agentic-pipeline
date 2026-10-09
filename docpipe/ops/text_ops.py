@@ -262,6 +262,42 @@ def _looks_like_running_head(text: str) -> bool:
     return digits / len(text) > 0.3 and len(text.split()) <= 4
 
 
+def op_pdf_columns_text(ctx: OpContext, params: dict[str, Any]) -> OpResult:
+    """Extract a multi-column page in reading order, without a model.
+
+    This exists because a two-column page with a trustworthy text layer has no
+    problem with its *characters* — only with the order they come in, which flat
+    text cannot express. PDFium knows every line's x-range, so the columns can be
+    separated here for the cost of a few milliseconds, where the alternative
+    measured 1,806 prompt + 2,096 completion tokens to re-transcribe text we
+    already had correctly in hand.
+
+    Whether this succeeded is not assumed: the gate re-checks the result, and a
+    page whose ordering is still wrong escalates on the next rung. A page with
+    overlapping text streams — a watermark drawn across the body — defeats it, and
+    must, because x-ordering cannot separate two texts that share x.
+    """
+    timer = Timer()
+    merged = dict(params)
+    merged["columns"] = True
+    result = op_pdf_text_layer(ctx, merged)
+    if result.ok and result.blocks:
+        result.signals = {**(result.signals or {}), "columns_handled": True}
+        result.replace_blocks = True
+        result.metadata = {**(result.metadata or {}), "ordering": "columns"}
+    return OpResult(
+        blocks=result.blocks,
+        signals=result.signals,
+        artifacts=result.artifacts,
+        cost=Cost(duration_ms=timer.ms()),
+        ok=result.ok,
+        diagnostics=result.diagnostics,
+        replace_blocks=result.replace_blocks,
+        metadata=result.metadata,
+    )
+
+
+
 def op_text_passthrough(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     """Emit the unit's text as-is.
 

@@ -44,6 +44,38 @@ from pathlib import Path
 
 USER_AGENT = "docpipe-corpus-fetcher/1.0 (+research; contact: local)"
 
+#: A downloaded file is only kept if its first bytes agree with what it claims to
+#: be. govinfo and friends answer a wrong-but-plausible package id with a 200 and
+#: an HTML "not found" page, so status codes and extensions are both claims; the
+#: magic number is the evidence. Without this the corpus silently gains a
+#: document that is not a document, and every later measurement is wrong.
+MAGIC: dict[str, tuple[bytes, ...]] = {
+    "pdf": (b"%PDF",),
+    "pptx": (b"PK\x03\x04",),
+    "docx": (b"PK\x03\x04",),
+    "xlsx": (b"PK\x03\x04",),
+    "zip": (b"PK\x03\x04",),
+    "png": (b"\x89PNG\r\n\x1a\n",),
+    "jpg": (b"\xff\xd8\xff",),
+    "txt": (),  # any bytes are a valid text file; emptiness is checked instead
+}
+
+
+def magic_ok(kind: str, payload: bytes) -> tuple[bool, str]:
+    """Does ``payload`` actually look like ``kind``? Returns (ok, reason)."""
+    if kind == "txt":
+        if not payload.strip():
+            return False, "empty text file"
+        return True, ""
+    prefixes = MAGIC.get(kind)
+    if prefixes is None:
+        return True, ""
+    if any(payload.startswith(prefix) for prefix in prefixes):
+        return True, ""
+    head = payload[:16]
+    looks = "html" if head.lstrip()[:1] == b"<" else repr(head[:8])
+    return False, f"not a {kind} ({looks}); server returned a placeholder page"
+
 #: arXiv categories chosen for structural variety, not for subject interest:
 #: heavy mathematics, algorithm papers with pseudo-code, empirical work with
 #: tables, and a biology paper whose figures carry the meaning.
@@ -59,6 +91,45 @@ ARXIV_CATEGORIES = [
 #: ACL Anthology papers are two-column with a fixed template: the cleanest
 #: available test of column-aware reading order.
 ACL_VOLUMES = ["2023.acl-long", "2022.emnlp-main", "2021.naacl-main"]
+
+#: Government Publishing Office documents. `govinfo` serves every package as a
+#: stable `/content/pkg/<id>/pdf/<id>.pdf`, and it is the only reachable source
+#: of layouts that are hard for reasons other than "academic paper":
+#:
+#:   Congressional Record  three to four newspaper columns per page, dense
+#:                         running text, speeches, and inserted tables. The
+#:                         hardest column geometry in the corpus.
+#:   US Code               two-column statute text with deep numbering, which
+#:                         breaks any rule that assumes sections start at the
+#:                         left margin.
+#:   Federal Register      single-column rules with long tables and preambles.
+#: Package ids that have been confirmed to return a real PDF. The obvious
+#: guesses for bills, hearings and GAO reports (`BILLS-118hr1enr`,
+#: `GAOREPORTS-GAO-24-106393`, `CHRG-118hhrg54321`) all answer **200 with a
+#: 44 KiB HTML page**, which is why `magic_ok` exists: a 200 and a `.pdf`
+#: extension agree with each other and neither is evidence.
+GOVINFO = [
+    ("CREC-2024-01-10", "three-column-newspaper"),
+    ("CREC-2024-01-09", "three-column-newspaper"),
+    ("USCODE-2022-title17", "two-column-legal"),
+    ("FR-2024-01-10", "rules-and-long-tables"),
+]
+
+#: IRS forms are the reachable sample of *form* documents: AcroForm fields,
+#: checkboxes, boxed regions, and instructions that wrap around them. A pipeline
+#: tuned on prose will happily read the boxes and lose the field semantics.
+IRS_FORMS = [
+    ("f1040.pdf", "form-fields"),
+    ("f1120.pdf", "form-fields"),
+    ("p15.pdf", "publication-two-column"),
+]
+
+#: SEC EDGAR filings. A 10-K's financial statements are the closest thing to a
+#: real-world spreadsheet: multi-level headings, footnote markers, and tables
+#: whose cells wrap. EDGAR also publishes `Financial_Report.xlsx` for many
+#: filings, which is the only freely fetchable real spreadsheet found.
+EDGAR_CIKS = ["0000320193", "0000789019", "0000019617"]
+SEC_UA = "docpipe-corpus-fetcher/1.0 (research; contact: corpus@example.org)"
 
 
 @dataclass
@@ -124,6 +195,11 @@ class Harvester:
             record.error = f"{type(exc).__name__}: {exc}"
             print(f"  FAIL {name[:56]:58} {record.error[:50]}", flush=True)
             return None
+        ok, reason = magic_ok(kind, payload)
+        if not ok:
+            record.error = reason
+            print(f"  BAD  {name[:56]:58} {reason[:46]}", flush=True)
+            return None
         target.write_bytes(payload)
         record.bytes = len(payload)
         record.sha256 = hashlib.sha256(payload).hexdigest()[:16]
@@ -131,6 +207,83 @@ class Harvester:
         return target
 
     # ── sources ─────────────────────────────────────────────────────────────
+
+    def govinfo(self, per_source: int) -> None:
+        """GPO documents: three-column records, statutes, rules, reports."""
+        print("govinfo (three-column records, legal text, rule tables)")
+        for name, archetype in GOVINFO[: max(1, per_source)]:
+            url = f"https://www.govinfo.gov/content/pkg/{name}/pdf/{name}.pdf"
+            self.save(
+                f"{name}.pdf",
+                url,
+                kind="pdf",
+                archetype=archetype,
+                source="govinfo",
+                licence="public domain (US Government work)",
+            )
+
+    def irs_forms(self, per_source: int) -> None:
+        """Government forms: AcroForm widgets, checkboxes, boxed fields."""
+        print("IRS (forms with fields and boxed regions)")
+        for name, archetype in IRS_FORMS[: max(1, per_source)]:
+            self.save(name, f"https://www.irs.gov/pub/irs-pdf/{name}", kind="pdf", archetype=archetype,
+                      source="irs", licence="public domain (US Government work)")
+
+    def edgar(self, per_source: int) -> None:
+        """Financial filings: tables whose cells wrap, and real spreadsheets.
+
+        EDGAR rejects a UA without a contact address, which is why this needs its
+        own header rather than the shared one.
+        """
+        print("SEC EDGAR (financial statements, tables, spreadsheets)")
+        for cik in EDGAR_CIKS[: max(1, per_source)]:
+            try:
+                payload = self._open_sec(f"https://data.sec.gov/submissions/CIK{cik}.json")
+                meta = json.loads(payload)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  FAIL submissions {cik}: {str(exc)[:60]}")
+                continue
+            recent = meta.get("filings", {}).get("recent", {})
+            forms = recent.get("form", [])
+            accessions = recent.get("accessionNumber", [])
+            for index, form in enumerate(forms):
+                if form not in ("10-K", "10-Q") or index >= len(accessions):
+                    continue
+                acc = accessions[index].replace("-", "")
+                cik_int = str(int(cik))
+                base = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc}"
+                # Ask the filing what it contains. `Financial_Report.xlsx` is a
+                # plausible name that 404s on most filings; the index is the only
+                # source of truth for the attachment names, and reading it also
+                # keeps this working when EDGAR changes what it publishes.
+                try:
+                    listing = json.loads(self._open_sec(f"{base}/index.json"))
+                    names = [item.get("name", "") for item in listing.get("directory", {}).get("item", [])]
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  FAIL index {cik}: {str(exc)[:60]}")
+                    continue
+                for name in names:
+                    lowered = name.lower()
+                    kind = ""
+                    if lowered.endswith((".xlsx", ".xls")):
+                        kind, archetype = "xlsx", "spreadsheet-financial"
+                    elif lowered.endswith(".pdf"):
+                        kind, archetype = "pdf", "filing-pdf"
+                    if kind:
+                        self.save(f"{cik}-{acc}-{name}", f"{base}/{name}", kind=kind,
+                                  archetype=archetype, source=f"edgar:{cik}",
+                                  licence="public filing (US SEC)")
+                break
+
+    def _open_sec(self, url: str) -> bytes:
+        """EDGAR wants a contact address in the UA.
+
+        No `Accept-Encoding: gzip` here on purpose: urllib does not decompress,
+        so asking for gzip means handing the JSON parser gzip bytes.
+        """
+        request = urllib.request.Request(url, headers={"User-Agent": SEC_UA})
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            return response.read()
 
     def arxiv(self, per_category: int) -> None:
         print("arXiv (single-column preprints across fields)")
@@ -296,10 +449,27 @@ class Harvester:
     # ── output ──────────────────────────────────────────────────────────────
 
     def write_manifest(self) -> Path:
+        """Merge into the existing manifest rather than replacing it.
+
+        Harvesting runs one source at a time — arxiv today, govinfo tomorrow —
+        and a manifest that only describes the most recent run is worse than no
+        manifest: it looks complete and is not.
+        """
         target = self.out / "corpus-manifest.jsonl"
+        merged: dict[str, dict[str, object]] = {}
+        if target.is_file():
+            for line in target.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    try:
+                        existing = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    merged[str(existing.get("path"))] = existing
+        for record in self.records:
+            merged[record.path] = record.as_dict()
         with target.open("w", encoding="utf-8") as handle:
-            for record in self.records:
-                handle.write(json.dumps(record.as_dict(), ensure_ascii=False) + "\n")
+            for path in sorted(merged):
+                handle.write(json.dumps(merged[path], ensure_ascii=False) + "\n")
         return target
 
     def summary(self) -> str:
@@ -324,7 +494,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Harvest a diverse document corpus.")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--per-source", type=int, default=3)
-    parser.add_argument("--skip", action="append", default=[], choices=["arxiv", "acl", "rfc", "office", "synthetic"])
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar"],
+    )
     parser.add_argument("--synthetic-from", nargs="*", default=[], type=Path)
     args = parser.parse_args(argv)
 
@@ -338,6 +513,12 @@ def main(argv: list[str] | None = None) -> int:
         harvester.acl(args.per_source)
     if "rfc" not in skipped:
         harvester.rfc(args.per_source)
+    if "govinfo" not in skipped:
+        harvester.govinfo(args.per_source)
+    if "irs" not in skipped:
+        harvester.irs_forms(args.per_source)
+    if "edgar" not in skipped:
+        harvester.edgar(args.per_source)
     if "office" not in skipped:
         harvester.office_from_github(args.per_source)
     if "synthetic" not in skipped:

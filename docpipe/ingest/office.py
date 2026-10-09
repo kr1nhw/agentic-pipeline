@@ -225,6 +225,9 @@ class DocxSession(BaseSession):
         body = self._document.element.body
         sections: list[dict[str, Any]] = []
         current: dict[str, Any] = {"heading": None, "paragraphs": [], "tables": [], "chars": 0}
+        #: Paragraph elements whose text this pass already accounted for. The
+        #: recovery sweep below reads everything *not* in here.
+        consumed: set[int] = set()
 
         def flush() -> None:
             if current["paragraphs"] or current["tables"]:
@@ -243,15 +246,56 @@ class DocxSession(BaseSession):
                 if text:
                     current["paragraphs"].append({"text": text, "style": style})
                     current["chars"] += len(text)
+                    consumed.add(id(child))
                     if current["chars"] >= DOCX_SECTION_CHAR_CAP:
                         flush()
                         current = {"heading": current["heading"], "paragraphs": [], "tables": [], "chars": 0}
             elif tag == "tbl":
-                table = Table(child, self._document)
-                rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                try:
+                    table = Table(child, self._document)
+                    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                except Exception:  # noqa: BLE001 - a malformed table is a recovery case, not a crash
+                    rows = []
                 current["tables"].append(rows)
                 current["chars"] += sum(len(cell) for row in rows for cell in row)
+                if rows:
+                    # `cell.text` covers these paragraphs, so the sweep must not
+                    # read them a second time.
+                    for inner in child.iter():
+                        if inner.tag.rsplit("}", 1)[-1] == "p":
+                            consumed.add(id(inner))
         flush()
+
+        # ── coverage backstop ───────────────────────────────────────────────
+        # python-docx models well-formed documents: body-level paragraphs, and
+        # tables that have rows. Text stored anywhere else is invisible to it —
+        # a table whose cells exist but whose `w:tr` rows do not, a paragraph
+        # nested inside a cell, a text box. In every one of those cases the text
+        # is in the file and in the text layer while reaching no block at all,
+        # and the gate then reports a table that was "detected but not
+        # extracted" from a document that in fact has fifteen characters of text.
+        #
+        # Structure may be downgraded; content may not be dropped.
+        recovered: list[str] = []
+        for element in body.iter():
+            if element.tag.rsplit("}", 1)[-1] != "p" or id(element) in consumed:
+                continue
+            try:
+                text = Paragraph(element, self._document).text.strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if text and text not in recovered:
+                recovered.append(text)
+        if recovered:
+            sections.append(
+                {
+                    "heading": None,
+                    "paragraphs": [{"text": text, "style": "recovered"} for text in recovered],
+                    "tables": [],
+                    "chars": sum(len(text) for text in recovered),
+                    "recovered": True,
+                }
+            )
         self._sections = sections or [{"heading": None, "paragraphs": [], "tables": [], "chars": 0}]
         self._units = len(self._sections)
         return self._sections

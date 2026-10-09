@@ -308,6 +308,7 @@ def summarize_report(
         "needs_review": sum(len(doc.needs_review) for doc in docs),
         "gate_failures": sum(doc.gate_failures for doc in docs),
         "escalations": sum(doc.escalations for doc in docs),
+        "vl_cache_hits": sum(doc.vl_cache_hits for doc in docs),
         "route_counts": _merge_route_counts(docs),
         **budget,
     }

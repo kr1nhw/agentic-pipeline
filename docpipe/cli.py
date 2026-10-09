@@ -408,6 +408,8 @@ def _print_run_summary(report: Any, config: Config) -> None:
     print(f"gate failures    {totals.get('gate_failures')}", file=sys.stderr)
     print(f"needs review     {totals.get('needs_review')}", file=sys.stderr)
     print(f"vision calls     {totals.get('vl_calls')}", file=sys.stderr)
+    print(f"  from cache     {totals.get('vl_cache_hits', 0)}  (model answers already paid for)", file=sys.stderr)
+    print(f"  deterministic  {routes.get('adapted', 0)}  (escalated, fixed without a model)", file=sys.stderr)
     print(f"tokens           prompt {totals.get('prompt_tokens')} / completion {totals.get('completion_tokens')}", file=sys.stderr)
     if config.price_prompt_per_mtok or config.price_completion_per_mtok:
         print(f"cost estimate    ${totals.get('usd_est')}", file=sys.stderr)

@@ -79,6 +79,105 @@ def page_signals(text: str, width: float, height: float) -> PageSignals:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Column geometry
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: A page needs at least this many lines before a column split is meaningful.
+MIN_LINES_FOR_COLUMNS = 8
+
+#: Each side of the boundary must carry at least this share of the lines.
+MIN_COLUMN_SIDE_FRACTION = 0.2
+
+#: At most this share of lines may cross the boundary for it to be a gutter.
+MAX_CROSSING_FRACTION = 0.12
+
+
+def detect_columns(
+    lines: list[dict[str, Any]],
+    *,
+    min_lines: int = MIN_LINES_FOR_COLUMNS,
+    min_side_fraction: float = MIN_COLUMN_SIDE_FRACTION,
+    max_crossing_fraction: float = MAX_CROSSING_FRACTION,
+) -> tuple[float | None, dict[str, Any]]:
+    """Locate the column gutter: the x boundary that the fewest lines cross.
+
+    Three other criteria were tried against a real two-column ACL page whose
+    columns are visually obvious (x = 71..290 and x = 306..526) and each failed:
+
+    * a band no character occupies — one full-width caption crosses the gutter and
+      fills it;
+    * the largest gap in line *starts* — lines beginning at varying x inside a
+      column (indented equations, list items) put the boundary mid-column;
+    * the band with the sparsest occupancy — a few lines ending a little past the
+      column edge leave the gutter around 80 % occupied, so every occupancy
+      threshold is arbitrary.
+
+    Crossing count has no threshold to tune into a corner: a boundary inside a
+    column is crossed by *every* line of that column, while a boundary in the
+    gutter is crossed only by the occasional overlong line. The minimum is sharp
+    rather than marginal, and a page that cannot produce it says so instead of
+    guessing.
+
+    Pure geometry, no session and no I/O, so the criteria above can be tested
+    directly rather than through a pipeline run.
+    """
+    usable = [line for line in lines if str(line.get("text", "")).strip()]
+    if len(usable) < min_lines:
+        return None, {"reason": f"only {len(usable)} lines", "columns": 1}
+
+    left = min(line["x0"] for line in usable)
+    right = max(line["x1"] for line in usable)
+    width = right - left
+    if width <= 0:
+        return None, {"reason": "zero text width", "columns": 1}
+
+    best: tuple[int, float, int, int] | None = None
+    for fraction in range(25, 76):
+        boundary = left + fraction / 100.0 * width
+        n_left = sum(1 for line in usable if line["x1"] <= boundary)
+        n_right = sum(1 for line in usable if line["x0"] >= boundary)
+        if min(n_left, n_right) < len(usable) * min_side_fraction:
+            continue
+        crossings = sum(1 for line in usable if line["x0"] < boundary < line["x1"])
+        if best is None or crossings < best[0]:
+            best = (crossings, boundary, n_left, n_right)
+
+    if best is None:
+        return None, {"reason": "no boundary leaves text on both sides", "columns": 1}
+
+    crossings, boundary, n_left, n_right = best
+    allowed = max(1, int(len(usable) * max_crossing_fraction))
+    if crossings > allowed:
+        return None, {
+            "reason": f"{crossings} of {len(usable)} lines cross the best boundary (limit {allowed})",
+            "columns": 1,
+            "crossings": crossings,
+        }
+    return boundary, {
+        "columns": 2,
+        "crossings": crossings,
+        "left_lines": n_left,
+        "right_lines": n_right,
+        "text_width": round(width, 1),
+    }
+
+
+def assign_columns(lines: list[dict[str, Any]], boundary: float | None) -> None:
+    """Tag each line with its column: 0 spans the gutter, 1 left, 2 right."""
+    if boundary is None:
+        for line in lines:
+            line["column"] = 1
+        return
+    for line in lines:
+        if line["x0"] < boundary < line["x1"]:
+            line["column"] = 0
+        elif (line["x0"] + line["x1"]) / 2.0 <= boundary:
+            line["column"] = 1
+        else:
+            line["column"] = 2
+
+
 class PdfSession(BaseSession):
     """One open PDF, reused for every page this worker touches."""
 
@@ -383,94 +482,67 @@ class PdfSession(BaseSession):
         return report
 
     def page_layout(self, page_no: int) -> dict[str, Any]:
-        """Estimate the page's column structure from character positions.
+        """Column structure, measured from line positions.
 
-        Multi-column layout is the single most common reason extracted text reads
-        as nonsense while looking fine in a diff, and it is measurable without
-        parsing anything: characters occupy a set of vertical bands, and a column
-        gutter is a band of the page that no character occupies across its whole
-        height.
-
-        Sampling is deliberate. The question is where text *can* be, not what it
-        says, so a few hundred character boxes answer it in milliseconds.
+        Delegates to :func:`detect_columns`, which explains why crossing count is
+        the criterion and the other three are not. Keeping the detector pure means
+        its criteria are unit-tested against the real page geometry that defeated
+        them in production, rather than being tuned by re-running a corpus.
         """
         cached = self._layouts.get(page_no)
         if cached is not None:
             return cached
 
         layout: dict[str, Any] = {"columns": 1, "gutter": None, "coverage": 0.0, "profiled": False}
-        page = None
-        textpage = None
         try:
-            with _PDFIUM_LOCK:
-                page = self._pdf[page_no - 1]
-                page_width = float(page.get_width())
-                textpage = page.get_textpage()
-                count = textpage.count_chars()
-                if count and page_width > 0:
-                    stride = max(1, count // 400)
-                    bins = 100
-                    occupied = [0] * bins
-                    sampled = 0
-                    for index in range(0, count, stride):
-                        char = textpage.get_text_range(index, 1)
-                        if not char or not char.strip():
-                            continue
-                        left, _bottom, right, _top = textpage.get_charbox(index)
-                        if right <= left:
-                            continue
-                        sampled += 1
-                        first = max(0, min(bins - 1, int(left / page_width * bins)))
-                        last = max(0, min(bins - 1, int(right / page_width * bins)))
-                        for slot in range(first, last + 1):
-                            occupied[slot] += 1
-                    if sampled >= 40:
-                        layout["coverage"] = round(sum(1 for value in occupied if value) / bins, 3)
-                        # The widest empty run strictly inside the page, ignoring
-                        # the margins, is a candidate gutter.
-                        best: tuple[int, int] | None = None
-                        run_start: int | None = None
-                        for slot in range(int(bins * 0.15), int(bins * 0.85)):
-                            if occupied[slot] == 0:
-                                run_start = slot if run_start is None else run_start
-                                continue
-                            if run_start is not None:
-                                if best is None or (slot - run_start) > (best[1] - best[0]):
-                                    best = (run_start, slot)
-                                run_start = None
-                        if run_start is not None and (best is None or (int(bins * 0.85) - run_start) > (best[1] - best[0])):
-                            best = (run_start, int(bins * 0.85))
-                        if best and (best[1] - best[0]) >= bins * 0.03:
-                            left_chars = sum(occupied[: best[0]])
-                            right_chars = sum(occupied[best[1] :])
-                            total = left_chars + right_chars
-                            # Both sides must carry real text, or it is not a gutter
-                            # but simply the end of a short line.
-                            if total and left_chars >= total * 0.25 and right_chars >= total * 0.25:
-                                layout["columns"] = 2
-                                layout["gutter"] = (
-                                    round(best[0] / bins * page_width, 1),
-                                    round(best[1] / bins * page_width, 1),
-                                )
-                    layout["profiled"] = True
+            lines = [line for line in self.page_lines(page_no) if line["text"].strip()]
+            boundary, evidence = detect_columns(lines)
+            layout.update({key: value for key, value in evidence.items() if key != "columns"})
+            layout["columns"] = evidence.get("columns", 1)
+            layout["gutter"] = (round(boundary, 1), round(boundary, 1)) if boundary is not None else None
+            if lines:
+                left = min(line["x0"] for line in lines)
+                right = max(line["x1"] for line in lines)
+                with _PDFIUM_LOCK:
+                    page = self._pdf[page_no - 1]
+                    width = float(page.get_width()) or 1.0
+                    page.close()
+                layout["coverage"] = round((right - left) / width, 3)
+            layout["profiled"] = True
         except Exception as exc:  # noqa: BLE001 - a layout estimate is an optimisation
             layout["error"] = str(exc)
-        finally:
-            if textpage is not None:
-                try:
-                    with _PDFIUM_LOCK:
-                        textpage.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            if page is not None:
-                try:
-                    with _PDFIUM_LOCK:
-                        page.close()
-                except Exception:  # noqa: BLE001
-                    pass
         layout["trust"] = self.text_layer_trust(page_no, layout)
         self._layouts[page_no] = layout
         return layout
+
+    def reading_order(self, page_no: int) -> list[dict[str, Any]]:
+        """Lines in reading order, resolving columns when the page has them.
+
+        Full-width elements keep their vertical place, then each column is read top
+        to bottom. That is what a person does, and unlike the flat text layer —
+        which preserves lines but not the column a line belongs to — the result is
+        readable.
+        """
+        lines = [line for line in self.page_lines(page_no) if line["text"].strip()]
+        if not lines:
+            return []
+        ordered = sorted(lines, key=lambda line: -line["top"])
+        layout = self.page_layout(page_no)
+        boundary = (layout.get("gutter") or (None, None))[0]
+        assign_columns(ordered, boundary if layout.get("columns", 1) >= 2 else None)
+        if layout.get("columns", 1) < 2:
+            return ordered
+
+        top_band = max(line["top"] for line in ordered)
+        bottom_band = min(line["bottom"] for line in ordered)
+        height = max(1.0, top_band - bottom_band)
+
+        def sort_key(line: dict[str, Any]) -> tuple[int, float]:
+            if line["column"] == 0:
+                return (0, (top_band - line["top"]) / height)
+            return (line["column"], top_band - line["top"])
+
+        return sorted(ordered, key=sort_key)
 
     def text_layer_trust(self, page_no: int, layout: dict[str, Any] | None = None) -> float:
         """How much the text layer can be believed, 0..1.
@@ -764,53 +836,6 @@ class PdfSession(BaseSession):
         self.enforce_raster_cache()
         return target
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Format plugin surface
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def match(head: bytes, path: str) -> float:
-    if head.startswith(b"%PDF-"):
-        return 1.0
-    if path.lower().endswith(PDF_EXTENSIONS):
-        return 0.7
-    return 0.0
-
-
-def open_session(path: Path, doc_id: str, config: Any) -> PdfSession:
-    return PdfSession(path=path, doc_id=doc_id, config=config, work_dir=Path(config.work_dir))
-
-
-def enumerate_units(ctx: FormatContext) -> Iterator[UnitSeed]:
-    session = PdfSession(
-        path=ctx.path,
-        doc_id=ctx.doc_id,
-        config=ctx.scratch.get("config"),
-        work_dir=Path(getattr(ctx.scratch.get("config"), "work_dir", ctx.work_dir)),
-    )
-    try:
-        yield from session.enumerate_units()
-    finally:
-        session.close()
-
-
-def detect_encryption(path: Path) -> dict[str, Any]:
-    """Report whether a PDF is encrypted, without needing pdfinfo.
-
-    An encrypted PDF is a legitimate input we cannot read; the caller marks the
-    document and moves on rather than crashing the run.
-    """
-    import pypdfium2 as pdfium
-
-    try:
-        pdf = pdfium.PdfDocument(str(path))
-    except Exception as exc:  # noqa: BLE001
-        return {"openable": False, "error": f"{type(exc).__name__}: {exc}"}
-    try:
-        return {"openable": True, "pages": len(pdf)}
-    finally:
-        pdf.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Line assembly
