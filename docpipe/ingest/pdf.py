@@ -592,8 +592,15 @@ def group_chars_into_lines(chars: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not chars:
         return []
 
-    sizes = sorted(size for size in (c.get("size") or 0 for c in chars) if size > 0)
-    median_height = sizes[len(sizes) // 2] if sizes else 10.0
+    # Band height comes from BOX height, never from font size. Font size (~9pt on
+    # a body page) is far larger than the vertical spread of a line's characters,
+    # so binning by it merges adjacent lines into one band and interleaves their
+    # words — which is exactly what an earlier version of this function did,
+    # producing `Niv DayanP,l Mioposshe Twitto` and phantom 140pt "headings".
+    # Font size is the right metric for deciding what IS a heading, and the wrong
+    # one for deciding where a line ENDS.
+    heights = sorted(height for height in (c["bottom"] - c["top"] for c in chars) if height > 0.5)
+    median_height = heights[len(heights) // 2] if heights else 10.0
     bin_width = max(0.4, median_height / 2.0)
 
     centres = [(c["top"] + c["bottom"]) / 2.0 for c in chars]
@@ -765,70 +772,3 @@ HEADING_PRE_FILTER_RATIO = 1.08
 SPACE_GAP_FACTOR = 0.28
 
 #: Two characters belong to the same line when their vertical centres are within
-#: this fraction of the line height.
-LINE_TOLERANCE = 0.55
-
-
-def group_chars_into_lines(chars: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group positioned characters into lines, reconstructing spaces from gaps.
-
-    Lines are found by binning character centres and merging adjacent bins, not by
-    a proximity threshold. A threshold is brittle in exactly the case that matters:
-    a line mixing font sizes (a superscript, an italic run, a drop cap) has a
-    vertical spread wider than the threshold, so the line splits into interleaved
-    subsequences and a sentence comes out as ``e u e e a a e e s a ue cos ec``.
-    Binning measures the *gaps between lines* instead, which are wide and
-    unambiguous.
-
-    Note the direction: PDF y grows upward, so reading order is descending y. The
-    first version of this returned pages bottom-up.
-    """
-    if not chars:
-        return []
-
-    heights = sorted(h for h in (c["bottom"] - c["top"] for c in chars) if h > 0.5)
-    median_height = heights[len(heights) // 2] if heights else 10.0
-    bin_width = max(0.4, median_height / 2.0)
-
-    centres = [(c["top"] + c["bottom"]) / 2.0 for c in chars]
-    lowest = min(centres)
-    buckets: dict[int, list[dict[str, Any]]] = {}
-    for char, centre in zip(chars, centres):
-        buckets.setdefault(int((centre - lowest) / bin_width), []).append(char)
-
-    keys = sorted(buckets)
-    bands: list[list[int]] = [[keys[0]]]
-    for key in keys[1:]:
-        # One empty bin is intra-line noise (an accent, a subscript); two or more
-        # is the leading between lines.
-        if key - bands[-1][-1] <= 1:
-            bands[-1].append(key)
-        else:
-            bands.append([key])
-
-    lines = [_assemble_line([char for key in band for char in buckets[key]]) for band in bands]
-    lines.sort(key=lambda line: -((line["top"] + line["bottom"]) / 2.0))
-    return [line for line in lines if line["text"]]
-
-
-def _assemble_line(chars: list[dict[str, Any]]) -> dict[str, Any]:
-    chars = sorted(chars, key=lambda c: c["x0"])
-    widths = [max(0.01, c["x1"] - c["x0"]) for c in chars]
-    typical = sorted(widths)[len(widths) // 2] if widths else 1.0
-    threshold = max(0.6, typical * SPACE_GAP_FACTOR * 3)
-    pieces: list[str] = []
-    previous_x1: float | None = None
-    for char in chars:
-        if previous_x1 is not None and char["x0"] - previous_x1 > threshold:
-            pieces.append(" ")
-        pieces.append(str(char["char"]))
-        previous_x1 = char["x1"]
-    text = "".join(pieces).strip()
-    return {
-        "text": text,
-        "x0": min(c["x0"] for c in chars),
-        "x1": max(c["x1"] for c in chars),
-        "top": min(c["top"] for c in chars),
-        "bottom": max(c["bottom"] for c in chars),
-        "size": max(0.1, max(c["bottom"] for c in chars) - min(c["top"] for c in chars)),
-    }

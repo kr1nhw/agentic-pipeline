@@ -398,19 +398,33 @@ def op_pdf_font_heading_map(ctx: OpContext, params: dict[str, Any]) -> OpResult:
                 metadata={"skipped": "uniform text size", "median_height": profile.get("median_height")},
             )
 
+    # Default backend is pdfminer through pdfplumber, which is slower but gets
+    # line separation right on dense layouts.
+    #
+    # `backend: "pdfium"` reads font sizes directly from PDFium — about ten times
+    # faster, and its size histogram is cleaner (title 17.2, heading 12, body 9 as
+    # distinct buckets rather than box heights that vary with the glyph). It is
+    # NOT the default because its line assembly is not yet reliable on pages where
+    # two text runs share a baseline band: an A/B against this backend showed 0%
+    # agreement, with authors interleaved into affiliations
+    # (`Niv DayanP,l Mioposshe Twitto`) and phantom 140pt "headings". Making it
+    # correct needs the run separation in `docpipe.ingest.pdf` finished, not
+    # another threshold. Exposed so that work is measurable rather than blind.
+    backend = str(params.get("backend", "pdfminer"))
     try:
-        # The session owns one pdfplumber handle per document and hands back the
-        # same Page for the same page, so the parsed layout objects this operator
-        # needs are the ones the table operator already paid for.
-        page = ctx.session.plumber_page(ctx.state.page_no) if hasattr(ctx.session, "plumber_page") else None
-        if page is None:
-            return OpResult()
-        lines = _group_chars_into_lines(page.chars)
+        if backend == "pdfium" and hasattr(ctx.session, "page_lines"):
+            lines = ctx.session.page_lines(ctx.state.page_no)
+        else:
+            backend = "pdfminer"
+            page = ctx.session.plumber_page(ctx.state.page_no) if hasattr(ctx.session, "plumber_page") else None
+            if page is None:
+                return OpResult()
+            lines = _group_chars_into_lines(page.chars)
     except Exception as exc:  # noqa: BLE001 - typography is an enhancement, not a requirement
         return OpResult(diagnostics=[f"font analysis failed: {type(exc).__name__}: {exc}"])
 
     if not lines:
-        return OpResult(cost=Cost(duration_ms=timer.ms()))
+        return OpResult(cost=Cost(duration_ms=timer.ms()), metadata={"backend": backend})
 
     sizes = [line["size"] for line in lines if line["size"] > 0]
     if not sizes:
@@ -438,7 +452,7 @@ def op_pdf_font_heading_map(ctx: OpContext, params: dict[str, Any]) -> OpResult:
                 level=level,
                 bbox=BBox(x0=line["x0"], y0=line["top"], x1=line["x1"], y1=line["bottom"]),
                 source_op="pdf_font_heading_map",
-                checks={"font_size": line["size"], "body_size": body_size},
+                checks={"font_size": line["size"], "body_size": body_size, "backend": backend},
             )
         )
 

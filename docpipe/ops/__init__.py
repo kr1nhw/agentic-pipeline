@@ -68,6 +68,9 @@ def register_ops(api: PluginAPI) -> None:
             "size_ratio": {"type": "number", "default": 1.12, "min": 1.0, "max": 3.0},
             "max_levels": {"type": "integer", "default": 4, "min": 1, "max": 6},
             "replace_duplicates": {"type": "boolean", "default": True},
+            # pdfminer is correct but slow; pdfium is ~10x faster and not yet
+            # reliable on pages where two text runs share a baseline band.
+            "backend": {"type": "string", "enum": ["pdfminer", "pdfium"], "default": "pdfminer"},
         },
         cost_class="local",
         produces=("blocks",),
