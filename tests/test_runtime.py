@@ -1548,3 +1548,50 @@ def test_ocr_is_not_offered_for_a_page_that_is_merely_thin() -> None:
         "image_area_frac": 1.0,
     }
     assert [step.op for step in Runner._escalation_steps(runner, Plan(), scanned, 1)] == ["page_ocr"]
+
+
+def test_flat_text_is_read_one_column_at_a_time() -> None:
+    """The characters come from the flat layer; only the ORDER is repaired.
+
+    Two paths fail on opposite halves of a two-column page, which is why neither
+    alone fixes it. `pdftotext -layout` has the right characters and the wrong order
+    — it writes both columns' lines in visual order, so reading straight down
+    interleaves them. PDFium's character boxes have the right x for every glyph and
+    the wrong characters, because its stream interleaves two text runs: measured on
+    2021.naacl-main.1, word shape 0.698 against the flat layer's 0.917, with 538
+    tokens mixing case inside a word against 246.
+
+    So the flat layer keeps its characters and takes its column assignment from its
+    own indentation: `-layout` writes each line's horizontal position as leading
+    spaces, and the gutter is a gap in that distribution.
+    """
+    from docpipe.ops.text_ops import _order_lines_by_column
+
+    left_lines = ["left column line %d" % n for n in range(6)]
+    right_lines = ["right column line %d" % n for n in range(6)]
+    # What -layout ACTUALLY emits, and getting this wrong is why the first version of
+    # this test passed while the pages stayed interleaved: one physical line carries
+    # the left column's text and the right column's text, separated by the gutter's
+    # spaces. There are no separate right-column lines to find by indentation.
+    layout = "\n".join(
+        f"{left_lines[n]:<30}{right_lines[n]}" for n in range(6)
+    )
+    reordered, ordering = _order_lines_by_column(layout)
+
+    assert ordering == "columns:2", ordering
+    first, _, second = reordered.partition("\n\n")
+    # The reordered lines keep the indentation `-layout` gave them; only the order
+    # changes, so the assertion strips it.
+    assert all(line.strip().startswith("left column") for line in first.splitlines()), first
+    assert all(line.strip().startswith("right column") for line in second.splitlines()), second
+    # Every line survives, and none is duplicated.
+    assert sorted(reordered.split()) == sorted(layout.split())
+
+
+def test_a_single_column_page_is_left_alone() -> None:
+    from docpipe.ops.text_ops import _order_lines_by_column
+
+    text = "\n".join(f"a paragraph line {n} of ordinary prose" for n in range(10))
+    reordered, ordering = _order_lines_by_column(text)
+    assert ordering == "single_column"
+    assert reordered == text

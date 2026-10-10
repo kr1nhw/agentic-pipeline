@@ -180,6 +180,51 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Multi-column order: a defect no metric could see
+
+A reader noticed that `content.md` for two-column papers still reads as two columns —
+the left and right columns glued together line by line. They were right, and the
+pipeline had been reporting 100 % text recall on those pages for twelve rounds.
+
+The chain, each link measured:
+
+1. **`pdftotext -layout` reconstructs the visual line**, so one physical line carries
+   the left column's text and the right column's text separated by the gutter's
+   spaces. Read top to bottom, the two columns interleave.
+2. **The column escalation never reordered anything.** `pdf_columns_text` passed
+   `columns: True` to the text operator, which **never read that parameter** — it only
+   read `geometry` (opt-in, default off). So the rung produced the same flat text,
+   then set `columns_handled: true` and `ordering: "columns"` regardless.
+3. **That claim silenced the gate.** `gate_default_v1` suppresses its own column
+   warning when `columns_handled` is set, so interleaved pages passed verification.
+4. **`reading_order_v1` could not repair it either**: it orders blocks that carry
+   bounding boxes, and the flat path attaches none — it returned early with
+   `no bboxes`.
+5. **The evaluator could not see it by construction.** `text_recall` is a multiset
+   comparison: the same tokens in the wrong order score 100 %. Order appears only in
+   the optional agent judge, which costs tokens and was never run on these pages.
+
+**What the fix does.** The characters stay exactly as pdftotext read them; only the
+order changes. `_order_lines_by_column` finds the vertical river of spaces running
+down the page, cuts every line at it, and emits the left column's lines followed by
+the right column's. Two measurements shaped it:
+
+| attempt | word shape | what happened |
+| --- | --- | --- |
+| flat layer, unchanged | **0.917** | right characters, wrong order |
+| PDFium character boxes | **0.698** | right order, wrong characters |
+| indentation split | 0.917 | never fired: `-layout` puts both columns on ONE line |
+| gutter split (shipped) | **0.917** | both |
+
+PDFium's stream interleaves two text runs for that file, so reading it glyph by glyph
+scrambles letters *within* a line (538 tokens mixing case inside a word against 246).
+The two paths fail on opposite halves of the problem, which is why neither alone
+fixes it and why the characters have to come from one and the order from the other.
+
+Verified on `2021.naacl-main.1.pdf`, page 2 — before, consecutive output lines
+alternated between columns; after, they read straight down one column, with the token
+count unchanged at 7 284.
+
 ### Corpus round 14 — a page's figures are published, and three regressions caught by the measure
 
 Offline, a PDF page's images were nowhere in the output: the vision path renders the
@@ -895,6 +940,11 @@ This section is the live TODO list. Items that later rounds resolved are kept in
   thread starvation. Threads do not help either: 24 document workers gave 95 threads
   and 100.7 % of one core, because the work is pure Python under the GIL. Real
   parallelism needs processes.
+- **Text order is not measured by the evaluator.** `text_recall` is a multiset
+  comparison, so a page whose paragraphs are in the wrong order scores 100 %. The
+  multi-column defect above survived twelve rounds of evaluation for that reason. An
+  order metric that does not need a model — comparing the output's line sequence
+  against the geometry-derived line order — is the obvious next instrument.
 - **A defective OCR layer cannot be detected locally** (measured; three detectors
   failed — see above).
 - **Multi-GB inputs are untested.** Documents are held in memory before writing.

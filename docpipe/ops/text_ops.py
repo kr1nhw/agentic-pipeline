@@ -65,13 +65,20 @@ def op_pdf_text_layer(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     text = text or ""
 
     drop_running_heads = bool(params.get("drop_running_heads", True))
-    # OPT-IN, and off by default. The character-box path recovers spaces and line
-    # breaks from geometry, but a band of equal-y characters can contain both a
-    # table caption and an adjacent body line whose x-ranges overlap — sorting
-    # that band by x interleaves the two into gibberish. Doing this properly needs
-    # real layout analysis (pdfminer's LTTextLine objects), not a hand-rolled band
-    # sweep, so the flat text layer stays the default until that exists.
-    # See docs/architecture.md § "Known gaps".
+    # The character-box path recovers spaces and line breaks from geometry and, on a
+    # two-column page, reads one column after the other. It is not the default for
+    # single-column pages: a band of equal-y characters can contain both a table
+    # caption and an adjacent body line whose x-ranges overlap, and sorting that band
+    # by x interleaves them. See docs/architecture.md § "Known gaps".
+    #
+    # `columns` does NOT turn it on, and that is measured rather than cautious. On
+    # 2021.naacl-main.1 the character-box path scores word shape 0.698 against the flat
+    # layer's 0.917, with 538 tokens mixing case inside a word against 246: PDFium's
+    # character stream for that file interleaves two text runs, so reading it
+    # character by character scrambles the letters WITHIN a line. pdftotext gets those
+    # characters right and only loses which column a line belongs to. The two paths
+    # fail on opposite halves of the problem, which is why `pdf_columns_text` reorders
+    # the flat lines by their own indentation instead of re-reading the page.
     use_geometry = bool(params.get("geometry", False)) and ctx.session is not None and hasattr(ctx.session, "page_lines")
 
     blocks: list[Block] = []
@@ -85,13 +92,7 @@ def op_pdf_text_layer(ctx: OpContext, params: dict[str, Any]) -> OpResult:
             blocks, ordering = _blocks_from_lines(ctx, lines, drop_running_heads=drop_running_heads)
 
     if not blocks:
-        paragraphs = [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
-        if len(paragraphs) <= 1:
-            paragraphs = _rejoin_wrapped_lines(text)
-        for paragraph in paragraphs:
-            if drop_running_heads and _looks_like_running_head(paragraph):
-                continue
-            blocks.append(_block(ctx, "paragraph", paragraph, source_op="pdf_text_layer"))
+        blocks = _flat_blocks(ctx, text, drop_running_heads=drop_running_heads)
 
     return OpResult(
         blocks=blocks,
@@ -232,6 +233,118 @@ def _paragraphs_from_column(
     return blocks
 
 
+#: A column has to hold at least this many lines before the split is believed.
+MIN_LINES_PER_COLUMN = 3
+
+#: The shortest run of offsets that must be blank in (almost) every line before it is
+#: believed to be a column gutter. `-layout` renders a page's horizontal position as
+#: spaces, so a gutter is a vertical river of them.
+MIN_GUTTER_SPACE_RUN = 3
+
+
+def _flat_blocks(ctx: OpContext, text: str, *, drop_running_heads: bool) -> list[Block]:
+    """Paragraph blocks from flat text, with no geometry attached."""
+    paragraphs = [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
+    if len(paragraphs) <= 1:
+        paragraphs = _rejoin_wrapped_lines(text)
+    blocks: list[Block] = []
+    for paragraph in paragraphs:
+        if drop_running_heads and _looks_like_running_head(paragraph):
+            continue
+        blocks.append(_block(ctx, "paragraph", paragraph, source_op="pdf_text_layer"))
+    return blocks
+
+
+def _order_lines_by_column(text: str) -> tuple[str, str]:
+    """Split a layout-preserving text layer at its gutter and read one column at a time.
+
+    Two paths fail on opposite halves of a two-column page, which is why neither alone
+    fixes it. `pdftotext -layout` has the RIGHT CHARACTERS and the wrong order: it
+    reconstructs the visual line, so a single physical line carries the left column's
+    text and the right column's text separated by the gutter's spaces, and reading the
+    file top to bottom interleaves them line by line. PDFium's character boxes have the
+    right x for every glyph and the WRONG CHARACTERS — measured on
+    2021.naacl-main.1, word shape 0.698 against the flat layer's 0.917, with 538 tokens
+    mixing case inside a word against 246 — because its stream interleaves two text
+    runs for that file.
+
+    So the characters stay exactly as pdftotext read them, and only the order changes:
+    find the vertical river of spaces that runs down the page, cut every line there,
+    and emit the left column's lines followed by the right column's. No geometry, no
+    second reader.
+
+    Returns the reordered text and what was done.
+    """
+    lines = text.splitlines()
+    body = [line for line in lines if line.strip()]
+    if len(body) < MIN_LINES_PER_COLUMN * 2:
+        return text, "single_column"
+
+    width = max(len(line) for line in body)
+    blank_everywhere: list[int] = []
+    for offset in range(width):
+        present = 0
+        blank = 0
+        for line in body:
+            if offset < len(line):
+                present += 1
+                if line[offset] == " ":
+                    blank += 1
+        if present >= max(MIN_LINES_PER_COLUMN, int(len(body) * 0.6)) and blank == present:
+            blank_everywhere.append(offset)
+
+    # The gutter is the longest run of such offsets; a short run is ordinary word
+    # spacing that happened to line up.
+    best_start = best_length = 0
+    run_start = None
+    for index, offset in enumerate(blank_everywhere):
+        if run_start is None:
+            run_start = offset
+        if index + 1 == len(blank_everywhere) or blank_everywhere[index + 1] != offset + 1:
+            length = offset - run_start + 1
+            if length > best_length:
+                best_start, best_length = run_start, length
+            run_start = None
+    if best_length < MIN_GUTTER_SPACE_RUN or best_start == 0:
+        return text, "single_column"
+
+    cut = best_start + best_length // 2
+    left_lines: list[str] = []
+    right_lines: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        left = line[:cut].rstrip()
+        right = line[cut:].strip()
+        if left:
+            left_lines.append(left)
+        if right:
+            right_lines.append(right)
+    if len(left_lines) < MIN_LINES_PER_COLUMN or len(right_lines) < MIN_LINES_PER_COLUMN:
+        return text, "single_column"
+    return "\n".join(left_lines + [""] + right_lines), "columns:2"
+
+
+def _text_layer_ordered_by_column(ctx: OpContext, params: dict[str, Any]) -> OpResult:
+    """The flat text layer, with its lines regrouped into columns."""
+    from docpipe.ops.text_ops import Timer as _Timer  # local alias keeps the import list small
+
+    timer = _Timer()
+    text = ctx.state.record.text_layer
+    if not text and ctx.session is not None:
+        text = ctx.session.page_text(ctx.state.page_no)
+    text = text or ""
+    reordered, ordering = _order_lines_by_column(text)
+    drop_running_heads = bool(params.get("drop_running_heads", True))
+    blocks = _flat_blocks(ctx, reordered, drop_running_heads=drop_running_heads)
+    return OpResult(
+        blocks=blocks,
+        signals={"text_layer_chars": len(text.strip())},
+        cost=Cost(duration_ms=timer.ms()),
+        metadata={"ordering": ordering},
+    )
+
+
 def _rejoin_wrapped_lines(text: str) -> list[str]:
     """Join hard-wrapped lines into paragraphs, on sentence-ish boundaries."""
     paragraphs: list[str] = []
@@ -280,11 +393,18 @@ def op_pdf_columns_text(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     timer = Timer()
     merged = dict(params)
     merged["columns"] = True
-    result = op_pdf_text_layer(ctx, merged)
+    result = _text_layer_ordered_by_column(ctx, merged)
     if result.ok and result.blocks:
-        result.signals = {**(result.signals or {}), "columns_handled": True}
+        ordering = (result.metadata or {}).get("ordering", "flat")
+        positioned = all(block.bbox is not None for block in result.blocks)
+        # Report what happened, and only claim the columns are handled when the
+        # operator actually established an order. `ordering == "flat"` means the flat
+        # text layer was used and the columns are still interleaved; saying otherwise
+        # suppresses the gate's own column warning, which is how interleaved text
+        # passed every check the pipeline has.
+        result.signals = {**(result.signals or {}), "columns_handled": ordering != "flat"}
         result.replace_blocks = True
-        result.metadata = {**(result.metadata or {}), "ordering": "columns"}
+        result.metadata = {**(result.metadata or {}), "ordering": ordering, "positioned": positioned}
     return OpResult(
         blocks=result.blocks,
         signals=result.signals,
