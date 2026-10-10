@@ -850,22 +850,25 @@ class Runner:
         # page, so without this rung every page of it costs ~4 100 model tokens —
         # 3.4 M for one book.
         # Which pages want OCR before a model? Exactly those with no characters to
-        # read, and there are three ways to have none: no text layer, a layer that
-        # cannot be trusted, or a page that is mostly image with no content on it
-        # (`image area 100% with only 0 characters` — a JBIG2 scan matched the scan
-        # pipeline and went straight to review because this test missed its reason).
+        # read — and that is a question about the page's SIGNALS, not about the wording
+        # of its gate reasons.
         #
-        # "Only N characters of content" is deliberately NOT here, though it reads
-        # like the same thing. A page can be thin and correct, and OCR output REPLACES
-        # the page's text — so running it on a thin page destroys what was there. The
-        # first version of this matched on that phrase, and the evaluator caught the
-        # damage on the next run: `testExtraSpaces.pdf`, a PDF whose whole point is
-        # unusual spacing, went from 100% text recall to 0% because OCR overwrote a
-        # layer that was right.
-        characters_missing = any(
-            marker in reasons
-            for marker in ("no text layer", "cannot be trusted", "image area")
-        )
+        # Matching the reason strings was tried twice and was wrong both times. First
+        # it missed a JBIG2 scan whose reason read `image area 100% with only 0
+        # characters`; then, widened to catch that, it fired on `only 69 characters of
+        # content (< 80)` — and OCR output REPLACES the page's text, so a PDF whose
+        # whole point is unusual spacing went from 100 % text recall to 0 % because a
+        # layer that was already right was overwritten. The evaluator caught that on
+        # the next run.
+        #
+        # The gate already reports what is needed: how many characters the page has
+        # and whether its layer can be believed. No characters, or characters that
+        # cannot be trusted, and OCR costs nothing and destroys nothing. Characters
+        # that are few but sound are content, not a defect.
+        content_chars = int(quality.get("content_chars") or 0)
+        trust = float(quality.get("text_layer_trust", 1.0))
+        untrusted = trust < float(getattr(self.config, "gate_trust_floor", 0.4)) or "cannot be trusted" in reasons
+        characters_missing = content_chars == 0 or untrusted
         if characters_missing and self._ocr_engine_available():
             return [
                 PlanStep(op="page_ocr", params={"dpi": 200 if attempt == 1 else 260}, reason="local OCR before the model")

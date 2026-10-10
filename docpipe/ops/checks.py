@@ -198,6 +198,12 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     if chars > 400 and not record.blocks:
         reasons.append("text layer present but no blocks were produced")
 
+    # Published because the escalation ladder decides from it whether a page has
+    # characters worth keeping. It was computed here and never reported, so the ladder
+    # read an absent key as zero, concluded every page was empty, and offered OCR to
+    # pages whose problem was two columns — 17 deterministic repairs became 17 pages
+    # for review in one run.
+    metrics["content_chars"] = content_chars
     metrics["reasons"] = reasons
     metrics["needs_escalation"] = bool(reasons)
     metrics["gate"] = "default_v1"

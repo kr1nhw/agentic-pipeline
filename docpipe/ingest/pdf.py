@@ -740,6 +740,23 @@ class PdfSession(BaseSession):
                 profile["n_paths"] = n_paths
                 profile["n_rules"] = n_rules
                 profile["n_images"] = n_images
+                # How much of the page the images cover, because the gate needs it to
+                # tell a scan from a page that merely has a figure on it, and its
+                # absence made it say "unknown image coverage" and shunt a 60-character
+                # page to review. Computed in the same pass as everything else.
+                if n_images and page_width:
+                    page_area = page_width * float(page.get_height() or 0)
+                    covered = 0.0
+                    for obj in page.get_objects():
+                        if int(obj.type) != 3:
+                            continue
+                        try:
+                            left, bottom, right, top = obj.get_pos()
+                            covered += max(0.0, right - left) * max(0.0, top - bottom)
+                        except Exception:  # noqa: BLE001 - one unreadable box is not the page
+                            continue
+                    if page_area > 0:
+                        profile["image_area_frac"] = round(min(1.0, covered / page_area), 3)
 
                 textpage = page.get_textpage()
                 count = textpage.count_chars()

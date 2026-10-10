@@ -1288,6 +1288,7 @@ def test_local_ocr_is_preferred_over_the_model_for_missing_characters(tmp_path: 
     from docpipe.exec.runner import Runner
 
     runner = Runner.__new__(Runner)
+    runner.config = Config(offline=True)
     runner._ocr_available = True  # pretend the engine is installed
 
     class Plan:
@@ -1296,16 +1297,22 @@ def test_local_ocr_is_preferred_over_the_model_for_missing_characters(tmp_path: 
 
         default_steps: list = []
 
-    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["no text layer and no blocks"]}, 1)
-    assert [step.op for step in steps] == ["page_ocr"], steps
+    # The quality dict is the gate's metrics, so a test must supply what the gate
+    # supplies: how many characters the page has and whether its layer can be believed.
+    no_text = {"reasons": ["no text layer and no blocks"], "content_chars": 0, "text_layer_trust": 1.0}
+    untrusted = {
+        "reasons": ["text layer cannot be trusted (trust 0.20)"],
+        "content_chars": 900,
+        "text_layer_trust": 0.2,
+    }
 
-    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["text layer cannot be trusted (trust 0.20)"]}, 1)
-    assert [step.op for step in steps] == ["page_ocr"], steps
+    assert [step.op for step in Runner._escalation_steps(runner, Plan(), no_text, 1)] == ["page_ocr"]
+    assert [step.op for step in Runner._escalation_steps(runner, Plan(), untrusted, 1)] == ["page_ocr"]
 
     # With no engine installed, the ladder must go straight to the model rather
     # than offering a rung that cannot run.
     runner._ocr_available = False
-    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["no text layer and no blocks"]}, 1)
+    steps = Runner._escalation_steps(runner, Plan(), no_text, 1)
     assert steps and steps[0].op != "page_ocr", steps
 
 
@@ -1516,6 +1523,7 @@ def test_ocr_is_not_offered_for_a_page_that_is_merely_thin() -> None:
     from docpipe.exec.runner import Runner
 
     runner = Runner.__new__(Runner)
+    runner.config = Config(offline=True)
     runner._ocr_available = True
 
     class Plan:
@@ -1524,10 +1532,19 @@ def test_ocr_is_not_offered_for_a_page_that_is_merely_thin() -> None:
 
         default_steps: list = []
 
-    thin = Runner._escalation_steps(runner, Plan(), {"reasons": ["only 69 characters of content (< 80)"]}, 1)
-    assert not [step for step in thin if step.op == "page_ocr"], thin
+    # Few characters but sound: content, not a defect. OCR would replace it.
+    thin = {
+        "reasons": ["only 69 characters of content (< 80) with unknown image coverage"],
+        "content_chars": 69,
+        "text_layer_trust": 1.0,
+    }
+    assert not [step for step in Runner._escalation_steps(runner, Plan(), thin, 1) if step.op == "page_ocr"]
 
-    scanned = Runner._escalation_steps(
-        runner, Plan(), {"reasons": ["image area 100% with only 0 characters of content"]}, 1
-    )
-    assert [step.op for step in scanned] == ["page_ocr"], scanned
+    # No characters at all on a page that is an image: OCR, and nothing is lost.
+    scanned = {
+        "reasons": ["image area 100% with only 0 characters of content"],
+        "content_chars": 0,
+        "text_layer_trust": 1.0,
+        "image_area_frac": 1.0,
+    }
+    assert [step.op for step in Runner._escalation_steps(runner, Plan(), scanned, 1)] == ["page_ocr"]

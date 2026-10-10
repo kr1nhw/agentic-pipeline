@@ -829,6 +829,11 @@ def _record_from_row(row: dict[str, Any]) -> PageRecord:
         signals=PageSignals(**(json.loads(row["signals"]) if row.get("signals") else {})),
         text_layer=row.get("text_layer"),
         text_layer_chars=row.get("text_layer_chars") or 0,
+        # Provenance is what says HOW the text was obtained, and image accounting asks
+        # exactly that: a page transcribed from its pixels is accounted for even though
+        # a transcription arrives as paragraphs. Dropping it here made the question
+        # unanswerable and five OCR-read pages were reported as unaccounted for.
+        provenance=json.loads(row["provenance"]) if row.get("provenance") else [],
     )
 
 
