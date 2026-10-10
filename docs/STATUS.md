@@ -84,6 +84,52 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 13 — documents chosen because they broke something
+
+A new source family: Apache Tika's PDF test-documents, thirty files contributed to a
+parser that reads documents for a living, chosen by its maintainers because they
+defeated it — annotations with no contents, content streams that space glyphs
+unusually, an embedded Flash object, JBIG2-encoded scans, an XFA government form,
+four PDF versions of a single blank page.
+
+Offline, with no model calls:
+
+| quantity | value |
+| --- | --- |
+| documents / pages | 30 / 41 |
+| routes | 28 static · **17 repaired deterministically** · 8 review |
+| score | **0.962** |
+| text recall / tables | 100 % / 100 % |
+| residual flags | 8 `image_unaccounted` |
+
+**The first run reported five broken documents and every one was a blank page.** Four
+were single-page PDFs whose only content is a blank page; the fifth embeds a file in
+an annotation with no contents. Each was recorded as `ocr produced no text on this
+page` — a fact about the document reported as a failure of the reader, and tesseract
+agrees with the pipeline (zero ink, zero characters).
+
+Two changes, and both are the distinction this project has now had to make four times
+— a legitimate outcome recorded as a defect:
+
+- `page_ocr` returns ok=True when it reads a page and finds no text. `ok=False` is
+  reserved for "I could not do my job": no engine, no raster, no time.
+- the gate does not flag a page with nothing on it. "Nothing drawn" is decidable from
+  the page's own objects: no text, no blocks, no paths, no images.
+
+The image count is load-bearing and is taken in the same PDFium pass as the paths,
+because a scanned page has no paths and no text — a rule that looked only at paths
+would declare every page of a scanned book empty and skip it, turning a content family
+into silence. Tests pin both directions: a scan is not empty, a blank leaf is.
+
+| adversarial corpus | before | after |
+| --- | --- | --- |
+| documents reporting errors | 5 | **0** |
+| pages flagged | 13 | **8** |
+
+The eight that remain are `image_unaccounted`: JBIG2 scans, an XFA form and journal
+tables whose images are present and linked but not read. Offline that is the honest
+result and vision is the remedy, exactly as for Office pictures.
+
 ### Corpus round 12 — a page that is an image no longer needs a model
 
 The harvest added a family the corpus never had: govinfo's digitised historical
