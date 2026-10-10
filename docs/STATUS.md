@@ -84,7 +84,50 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
-### Corpus round 13 — documents chosen because they broke something
+### Corpus round 14 — a page's figures are published, and three regressions caught by the measure
+
+Offline, a PDF page's images were nowhere in the output: the vision path renders the
+whole page for a model to describe, and nothing else touched them. On thirty
+adversarial PDFs that was the entire residual — eight pages of unaccounted images on a
+page whose meaning is its charts.
+
+`pdf_page_images` now extracts the images a page embeds, one figure block each with
+its box and its bytes on disk, and skips pages that have none for free using the count
+the page profile already computed. It runs in the born-digital and slide-export plans
+and in the format's fallback operators, before `caption_blocks` so captions have
+figures to attach to. What it produces is **linked, not read**: a URI and no text.
+
+| adversarial corpus, 30 documents | start of round | now |
+| --- | --- | --- |
+| pages flagged | 13 | **1** |
+| documents reporting errors | 5 | 0 |
+| images unaccounted | 8 | **1** |
+| score | 0.934 | **0.973** |
+
+And an image-only PDF built from a real 1789 scan — five pages with no text layer at
+all — reads at **1.000** with every image accounted for, using local OCR at zero
+tokens.
+
+**Three of this round's five changes were wrong, and the evaluator said so each time.**
+That is worth recording as much as the fixes:
+
+1. Widening the OCR rung's reasons to include `only N characters of content` made it
+   fire on thin-but-correct pages. OCR output REPLACES the page's text, so a PDF whose
+   whole point is unusual spacing went from 100 % text recall to 0 %.
+2. Making the rung decide from signals looked like the fix — but the gate computed its
+   character count and never published it. The ladder read the absent key as zero,
+   concluded every page was empty, and offered OCR to pages whose problem was two
+   columns: 17 deterministic repairs became 17 pages for review, with 14 reporting lost
+   text. The gate now publishes `content_chars` and the ladder reads that name.
+3. The evaluator's page record was rebuilt without its `provenance` — the field that
+   says HOW the text was obtained — so five pages read completely by OCR were reported
+   as unaccounted for. Image accounting asks exactly that question.
+
+Each was found by running the corpus and reading the score, not by review, and the
+common shape is a contract between two stages that both sides assumed: a key one
+writes under one name and the other reads under another, or does not write at all.
+
+### Corpus round 13### Corpus round 13 — documents chosen because they broke something
 
 A new source family: Apache Tika's PDF test-documents, thirty files contributed to a
 parser that reads documents for a living, chosen by its maintainers because they
