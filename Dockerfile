@@ -107,6 +107,15 @@ RUN set -eux; \
     apt-get -o Dir::Bin::apt-key=/usr/local/bin/apt-key-gpgv-shim install -y --no-install-recommends \
         gnupg \
         poppler-utils \
+        # OCR, locally, and this is a deliberate design choice rather than a
+        # convenience. A 1789 volume in the corpus is a pure image scan: 828 pages,
+        # ZERO characters of text layer, one image each. Without a local OCR the
+        # only path for such a page is the vision model, at ~4 100 tokens a page —
+        # 3.4 M tokens for one volume, and a per-page cost that never falls. With
+        # tesseract the same page costs no tokens at all, and the model is kept for
+        # the pages OCR cannot read.
+        tesseract-ocr \
+        tesseract-ocr-eng \
         fontconfig \
         fonts-dejavu-core \
         libgomp1 \

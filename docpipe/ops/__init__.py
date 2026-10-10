@@ -9,7 +9,7 @@ interface and the "extend it like we do" promise would be false.
 from __future__ import annotations
 
 from docpipe.api.registry import PluginAPI
-from docpipe.ops import checks, media_ops, office_ops, struct_ops, text_ops
+from docpipe.ops import checks, media_ops, ocr_ops, office_ops, struct_ops, text_ops
 
 __all__ = ["register_ops"]
 
@@ -130,6 +130,26 @@ def register_ops(api: PluginAPI) -> None:
         cost_class="local",
         produces=("blocks", "table"),
         unit_kinds=("slide", "docx_flow"),
+    )
+
+    api.register_op(
+        "page_ocr",
+        ocr_ops.op_page_ocr,
+        summary=(
+            "Read this page's image with local OCR (tesseract) and emit its text. Costs no "
+            "model tokens, which is the point: use it for a page with no text layer and for a "
+            "page whose layer cannot be trusted, BEFORE any vision call. It fails cleanly when "
+            "the engine is missing or the page is unreadable, so the ladder can fall through."
+        ),
+        params_schema={
+            "language": {"type": "string", "default": "eng"},
+            "dpi": {"type": "integer", "default": 200, "minimum": 110, "maximum": 600},
+            "timeout_s": {"type": "number", "default": 45.0, "minimum": 5.0},
+            "replace": {"type": "boolean", "default": True},
+        },
+        cost_class="local",
+        produces=("blocks",),
+        unit_kinds=("pdf_page", "image", "slide"),
     )
 
     api.register_op(

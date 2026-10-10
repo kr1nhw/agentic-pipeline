@@ -1273,3 +1273,53 @@ def test_garbling_needs_font_evidence_as_well_as_word_shape() -> None:
     assert looks_garbled(mathematics) is False
     # A decoding failure with no ambiguity is still a flag on its own.
     assert looks_garbled("text \ufffd\ufffd\ufffd\ufffd more text " * 8, unicode_ratio=1.0) is True
+
+
+def test_local_ocr_is_preferred_over_the_model_for_missing_characters(tmp_path: Path, registry: Registry) -> None:
+    """A page with no text layer must not cost a model call before tesseract has tried.
+
+    A 1789 volume in the corpus is 828 pages of pure image with ZERO characters of
+    text layer. The font-based trust rule has nothing to judge, so without a local
+    OCR the only route for every page is the vision model at ~4 100 tokens a page —
+    3.4 M tokens for one book. The ladder now offers `page_ocr` first whenever the
+    reason is missing or untrustworthy characters, and falls through to the model
+    when OCR cannot help.
+    """
+    from docpipe.exec.runner import Runner
+
+    runner = Runner.__new__(Runner)
+    runner._ocr_available = True  # pretend the engine is installed
+
+    class Plan:
+        class verify:  # noqa: N801 - mirrors the schema's shape
+            escalate_to = "vl_extract"
+
+        default_steps: list = []
+
+    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["no text layer and no blocks"]}, 1)
+    assert [step.op for step in steps] == ["page_ocr"], steps
+
+    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["text layer cannot be trusted (trust 0.20)"]}, 1)
+    assert [step.op for step in steps] == ["page_ocr"], steps
+
+    # With no engine installed, the ladder must go straight to the model rather
+    # than offering a rung that cannot run.
+    runner._ocr_available = False
+    steps = Runner._escalation_steps(runner, Plan(), {"reasons": ["no text layer and no blocks"]}, 1)
+    assert steps and steps[0].op != "page_ocr", steps
+
+
+def test_ocr_output_is_reassembled_into_paragraphs() -> None:
+    """Tesseract emits one line per text line; a line is not a paragraph.
+
+    Emitting a block per line makes the assembly stage treat every line as its own
+    paragraph, and the chunker then splits mid-sentence. Hyphenated line breaks are
+    rejoined because OCR reports the printed hyphen, not the word.
+    """
+    from docpipe.ops.ocr_ops import _paragraphs
+
+    text = "THE first section of this Act\nshall be construed\nto-\ngether with the\n\nSECOND section.\n"
+    blocks = _paragraphs(text)
+    assert blocks == ["THE first section of this Act shall be construed together with the", "SECOND section."], blocks
+    assert _paragraphs("") == []
+    assert _paragraphs("   \n  \n") == []

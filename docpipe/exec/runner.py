@@ -789,6 +789,16 @@ class Runner:
             return False
         return True
 
+    def _ocr_engine_available(self) -> bool:
+        """Is a local OCR engine installed? Cached: it cannot appear mid-run."""
+        cached = getattr(self, "_ocr_available", None)
+        if cached is None:
+            from docpipe.ops.ocr_ops import ocr_available
+
+            cached = ocr_available() is not None
+            self._ocr_available = cached
+        return bool(cached)
+
     def _rung_runnable(self, steps: list[PlanStep]) -> tuple[bool, str]:
         """Can this rung of the ladder run, and if not, why not?
 
@@ -832,6 +842,19 @@ class Runner:
         # already had. The gate re-checks the result, so a page this cannot help —
         # overlapping text streams, a watermark over the body — simply escalates on
         # the next rung.
+        # OCR before the model, whenever the problem is that there are no characters
+        # to trust. A pure scan has no text layer at all, and a layer decoded from
+        # glyph names is the wrong characters rather than the right ones in the
+        # wrong order; both need the pixels transcribed, and tesseract does that for
+        # no tokens at all. Measured on a 1789 volume: 828 pages, zero characters per
+        # page, so without this rung every page of it costs ~4 100 model tokens —
+        # 3.4 M for one book.
+        characters_missing = "no text layer" in reasons or "cannot be trusted" in reasons
+        if characters_missing and self._ocr_engine_available():
+            return [
+                PlanStep(op="page_ocr", params={"dpi": 200 if attempt == 1 else 260}, reason="local OCR before the model")
+            ]
+
         if attempt == 1 and "columns" in reasons:
             characters_unreliable = "cannot be trusted" in reasons or "garbled" in reasons
             if not characters_unreliable:
