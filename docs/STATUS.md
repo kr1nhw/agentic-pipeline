@@ -1,7 +1,68 @@
 # Status
 
-What is built, what is verified on the run host, what is not, and what the next
-three actions are. Written as a handover, not a changelog.
+## Where this stands
+
+A document-extraction agent that decides per page how to read it, spends a model call
+only when no deterministic operator can do the job, and measures itself continuously.
+The numbers below are all from runs on the run host, not estimates.
+
+| corpus | documents / pages | score | model tokens |
+| --- | --- | --- | --- |
+| main corpus (papers, government, Office, forms, scans) | 39 / 1 374 | **1.000** | **0** |
+| fresh harvest (24 two-column, 16 table-heavy, 8 formula-heavy, decks, Word, statutes) | 102 / 3 207 | **0.998** | **0** |
+| adversarial (PDFs contributed to Apache Tika because they broke it) | 30 / 41 | **0.973** | **0** |
+| image-only PDF from a 1789 scan | 1 / 5 | **1.000** | **0** |
+
+With vision enabled on the main corpus (cold cache, 30-call cap):
+
+| quantity | value |
+| --- | --- |
+| vision calls | **19** — 1.4 % of pages |
+| tokens | 32 775 prompt + 45 220 completion = **77 995** |
+| per page | **0.014 calls · 56.8 tokens** |
+| pages repaired deterministically instead | **410** — 22× the number that reached the model |
+| counterfactual without the ladder | ~1.76 M tokens, 1 282 per page |
+| **reduction** | **22.5×** |
+
+Wall clock: ~1 s per page for extraction, 244 ms per page of signalling (7.6× faster
+than at the start of this work), 0.6 s per page to evaluate.
+
+## How the numbers got here
+
+Eleven rounds of harvesting documents, running them, and folding what broke back into
+general rules. Every round's finding was a rule, never a document:
+
+| finding | what it changed |
+| --- | --- |
+| `pdffonts` parsed by token index, and its `type` column contains a space | parse by character offsets from the header |
+| Font metadata treated as a verdict on the text layer | the text decides: word shape, with the fonts as the precondition |
+| Word shape applied without that precondition | mathematics was reported as debris on 166 pages |
+| `replace_blocks` cleared every block | the column escalation discarded the tables the plan had already extracted |
+| An escalated page labelled `vl_assisted` with no model call | cost reporting that hid its own saving |
+| A running head needed only two pages of evidence | a two-slide deck lost its placeholder text |
+| A DOCX backstop keyed element identity on `id()` | text duplicated and dropped; 9 % recall on a real file |
+| Text removed as a "duplicate" reported as lost | 98 % of claimed loss was repetition, 11 tokens were real |
+| An image extracted but unread reported as missing | linked is not lost |
+| One PDFium call outside the lock | a 357-page document segfaulted the run, three times |
+| The probe profiled every page to route on sixty | page-selective enumeration |
+| `font_report`'s cache was never written | `pdffonts` re-ran per page: 5 minutes of a 357-page run |
+| A legitimate outcome recorded as an error, four times | notes versus errors, again and again |
+| A contract gap: a key one stage wrote, another read by a different name | the gate publishes `content_chars`; the evaluator loads `provenance` |
+
+## Known gaps, honestly
+
+- **A defective OCR layer cannot be detected locally.** The 1789 volume's layer reads
+  `Ses s . I. Ch . 24.` and passes every check: its fonts carry a Unicode map, recall is
+  100 % because it matches itself, and word shape is 0.91–0.96. Three detectors were
+  tried and all three failed — single-letter rate, and agreement with a fresh OCR,
+  which agrees with the defective layer at 0.97 while disagreeing with clean born-digital
+  documents at 0.21–0.31. Detection needs a dictionary, a model, or a person.
+- **Images are published, not read.** A figure is extracted with its bytes and linked;
+  reading it is the model's job and is priced accordingly.
+- **Forms sit at 50–100 % table survival.** A form is a grid whose cells are mostly
+  empty by design, and the acceptance rule rejects mostly-empty tables.
+- **Multi-GB inputs are untested.** Documents are held in memory before writing.
+- **No sharded run has been diffed against a single-container run.**
 
 ## Verified on the run host (`119.3.235.35`)
 
