@@ -8,7 +8,7 @@ The numbers below are all from runs on the run host, not estimates.
 
 | corpus | documents / pages | score | model tokens |
 | --- | --- | --- | --- |
-| main corpus (papers, government, Office, forms, scans) | 39 / 1 374 | **1.000** | **0** |
+| main corpus (papers, government, Office, forms, scans) | 39 / 1 374 | **0.996** | **0** |
 | fresh harvest (24 two-column, 16 table-heavy, 8 formula-heavy, decks, Word, statutes) | 102 / 3 207 | **0.998** | **0** |
 | adversarial (PDFs contributed to Apache Tika because they broke it) | 30 / 41 | **0.973** | **0** |
 | image-only PDF from a 1789 scan | 1 / 5 | **1.000** | **0** |
@@ -26,6 +26,26 @@ With vision enabled on the main corpus (cold cache, 30-call cap):
 
 Wall clock: ~1 s per page for extraction, 244 ms per page of signalling (7.6× faster
 than at the start of this work), 0.6 s per page to evaluate.
+
+### One of those numbers was measured with a blind spot
+
+The main corpus scored **1.000** until the last round, when a page profile began
+reporting how many images a page contains. The evaluator had been asking the profile
+for that count all along, and the profile never had it, so `source_images` was zero on
+every PDF page and "images accounted 100 %" was vacuous — there was nothing to account
+for. With the count present the honest figure appears: **98 %**, because fifteen
+born-digital papers have figures that are now extracted and linked but not read, which
+is exactly what they are.
+
+The score moved 1.000 → 0.996 for the same reason, and two more pages showed up as
+losing text: 173 and 95 tokens missing from two Federal Register index pages, of which
+167 and 92 are present elsewhere in the document and nine are gone from it entirely —
+page numbers in a CFR citation list (`896`, `1150`, `1034`, `1035`) and two OCR
+fragments. Nine tokens out of 1.1 million, on two index pages, is what "0.996" means
+here.
+
+A metric nobody can distinguish from a tautology is worth distrusting, and this one
+survived eleven rounds of review because it always said 100 %.
 
 ## How the numbers got here
 
