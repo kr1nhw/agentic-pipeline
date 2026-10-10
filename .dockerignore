@@ -21,3 +21,6 @@ tools/build_image.sh
 tools/run_local.sh
 tools/sync_out.sh
 tools/test_in_image.sh
+
+# CI definitions are not part of the build context
+.github

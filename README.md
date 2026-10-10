@@ -39,6 +39,32 @@ which path, and the plugin loader — so a user gets a working, extensible extra
 with one `docker run`, and can add capability with `dsh plugin add` or a format plugin
 without rebuilding anything.
 
+## Get the image
+
+Published from this repository by `.github/workflows/image.yml` on every push to
+`main` and every `v*` tag:
+
+```bash
+docker pull ghcr.io/kr1nhw/docpipe-agent:latest
+```
+
+Tags: `latest` (default branch), the version from `pyproject.toml` on a `v*` tag,
+the branch name, and `sha-<short>` for every build. The workflow builds from a clean
+checkout — `requirements.txt` is generated from `pyproject.toml`, not committed — and
+smoke-tests the image *before* pushing it: `selftest`, a check that every external tool
+the operators call is present, and a one-page extraction run end to end.
+
+To build it yourself, from a clone, with nothing but Docker:
+
+```bash
+python3 tools/export_requirements.py . > requirements.txt   # from pyproject.toml
+docker build -t docpipe-agent:local .
+docker run --rm docpipe-agent:local selftest
+```
+
+`tools/build_image.sh` does the same thing on a remote host, which is how the image
+in this project's own sessions was built.
+
 ## Quick start
 
 ```bash

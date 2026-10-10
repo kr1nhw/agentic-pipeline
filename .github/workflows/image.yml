@@ -1,0 +1,147 @@
+name: image
+
+# Build the product image from the repository alone and publish it to GHCR.
+#
+# Two things make this work from a clean checkout, and both were missing before:
+#
+#   * `requirements.txt` is generated from `pyproject.toml` here rather than
+#     committed, so the dependency list cannot drift from its single source of
+#     truth — and the file the Dockerfile COPYs actually exists in CI.
+#   * the mirrors are overridden to the canonical ones. The Dockerfile defaults to
+#     mirrors hosted in China because the original build host could not reach
+#     anything else; a GitHub runner can, and asking it to fetch Debian, PyPI and
+#     npm through those mirrors is slow at best and broken at worst.
+#
+# The image is smoke-tested BEFORE it is pushed, from the same content: the first
+# build loads it into the runner's daemon and checks it, the second pushes with the
+# layer cache warm. A published image that has never been started is a guess.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/docpipe-agent
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate requirements.txt from pyproject.toml
+        run: |
+          set -eux
+          python3 tools/export_requirements.py . > requirements.txt
+          wc -l < requirements.txt
+
+      - name: Read the version from pyproject.toml
+        id: version
+        run: |
+          set -eux
+          version="$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          print(re.search(r'^version = "([^"]+)"', text, re.M).group(1))
+          PY
+          )"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build (loaded locally for the smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DOCPIPE_VERSION=${{ steps.version.outputs.value }}
+            APT_MIRROR=https://deb.debian.org
+            PIP_INDEX_URL=https://pypi.org/simple
+            NPM_REGISTRY=https://registry.npmjs.org
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        run: |
+          set -eux
+          # The image's own check: python imports, the operator registry, the
+          # pipeline catalog, and the external tools the operators call.
+          docker run --rm "$IMAGE:smoke" selftest
+          # Assert the binaries the operators shell out to are present. A package
+          # list is a claim; a lookup is evidence.
+          docker run --rm --entrypoint sh "$IMAGE:smoke" -c '
+            for tool in pdftotext pdffonts pdftoppm pdfinfo tesseract node dsh; do
+              command -v "$tool" > /dev/null || { echo "MISSING: $tool"; exit 1; }
+            done
+            echo tools-ok'
+          # And that a document can actually be read end to end, offline.
+          docker run --rm --entrypoint sh "$IMAGE:smoke" -c '
+            set -eu
+            printf "PAGE ONE\n\nA short paragraph on the first page.\n" > /tmp/smoke.txt
+            mkdir -p /tmp/smoke-in /tmp/smoke-out
+            mv /tmp/smoke.txt /tmp/smoke-in/
+            docpipe run --in /tmp/smoke-in --out /tmp/smoke-out --work /tmp/smoke-work --offline > /dev/null
+            grep -q "short paragraph" /tmp/smoke-out/docs/*/content.md
+            echo extraction-ok'
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DOCPIPE_VERSION=${{ steps.version.outputs.value }}
+            APT_MIRROR=https://deb.debian.org
+            PIP_INDEX_URL=https://pypi.org/simple
+            NPM_REGISTRY=https://registry.npmjs.org
+          cache-from: type=gha
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Image"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Pull with: \`docker pull ${{ env.IMAGE }}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
