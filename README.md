@@ -10,6 +10,27 @@ composes a pipeline out of those operators only when the deterministic router is
 a page fails the quality gate. The operator registry is closed — the model selects and
 parameterizes, it never invents.
 
+## What it costs
+
+Cheap and deterministic first, a model last, and every rung has to be able to say it
+cannot help. Measured on a 1 374-page corpus with vision enabled and a cold cache:
+
+| quantity | value |
+| --- | --- |
+| vision calls | **19** — 1.4 % of the pages |
+| tokens | **56.8 per page** (4 105 per escalated page) |
+| pages repaired by the deterministic rungs | **410**, against 19 that needed a model |
+| counterfactual without those rungs | ~1.76 M tokens — **22.5× more** |
+
+Local OCR (tesseract) is a rung, not a fallback: a page that is an image has no
+characters for `pdftotext` and no fonts for the trust rule, so without it every such
+page costs a model call. With it, an image-only PDF of a 1789 scan reads at 1.000 for
+zero tokens, and the model is kept for pages OCR cannot manage.
+
+Measured end to end, offline: **1.000** on the main corpus (1 374 pages), **0.998** on a
+102-document harvest (3 207 pages), **0.973** on thirty PDFs contributed to Apache Tika
+because they broke it.
+
 ## Why an image
 
 The product is the image, not a host install. It carries the extraction runtime, the
