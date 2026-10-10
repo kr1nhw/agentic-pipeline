@@ -366,6 +366,29 @@ the 11 real tokens were invisible inside it. So:
 The same discipline applies to any metric that judges output against input: state
 what transformation the pipeline performs on purpose, and measure the rest.
 
+## The order of the ladder
+
+Cheap and deterministic first, the model last, and every rung must be able to say it
+cannot help:
+
+1. **Read the file's own structures.** A Word file knows its headings; a slide knows its
+   shapes; a PDF knows its fonts, its ruling lines and its per-character geometry. This
+   is exact and costs nothing.
+2. **Re-read the page when the first pass was wrong.** A two-column page has correct
+   characters in the wrong order: line geometry fixes that for free. A page whose text
+   is an image needs a different reader, and `page_ocr` (tesseract) reads it for no
+   tokens at all. Both replace the page's prose — and must leave its tables, figures and
+   captions alone, then re-run the plan's ordering operator.
+3. **Ask a model only when the page still fails**, and say in the reason what it failed
+   on so the request is specific.
+
+Measured on a 1 374-page corpus: 410 pages were repaired by rung 2 and 19 reached rung 3
+— a 22.5× reduction in tokens against a pipeline with no rungs, at 56.8 tokens a page.
+
+**Every rung must fail cleanly.** With no OCR engine installed the rung is not offered;
+when OCR reads a page and finds nothing, that is a result, not a failure. A rung that
+cannot say "I could not do this" turns into a page marked for review with no explanation.
+
 ## When the evidence is new
 
 If a page's signals match no archetype — a form, a musical score, a handwritten
