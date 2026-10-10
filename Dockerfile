@@ -83,6 +83,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # state data`, the container inheriting umask 0027 with no /var/lib/ucf), and a
 # secondary rasteriser is not worth an unreliable build. Enable with
 # --build-arg INSTALL_GHOSTSCRIPT=1 where the host behaves.
+# tesseract-ocr is here for a deliberate reason rather than convenience: a page that
+# is an image has no other local reader, and the alternative is the vision model at
+# ~4 100 tokens a page, a per-page cost that never falls with scale. Tesseract reads
+# such a page for no tokens at all, and the model is kept for pages OCR cannot read.
+#
+# What tesseract is NOT, measured on the 1789 volume it was added for: that volume
+# turned out to carry an OCR layer of 4 300-5 600 characters a page, and on the same
+# page the layer and a fresh tesseract pass are comparable — 732 tokens with inserted
+# spaces against 728 tokens with substituted characters, same word shape. Neither
+# source is better; they fail differently. The operator is for documents with NO
+# layer, not for replacing a layer that exists.
+#
+# DO NOT put a comment inside the command below. The first attempt at adding
+# tesseract did exactly that, and a `#` inside a backslash-continued RUN comments
+# out every argument after it — the package was silently not installed, apt
+# succeeded, and the build exited 0. The verification below now fails loudly.
+#
 # libgomp1 serves pyarrow/pyarrow OpenMP kernels; libatomic1 is required by the
 # Node 25 runtime copied from the node stage; sqlite3 backs the work queue.
 #
@@ -107,13 +124,6 @@ RUN set -eux; \
     apt-get -o Dir::Bin::apt-key=/usr/local/bin/apt-key-gpgv-shim install -y --no-install-recommends \
         gnupg \
         poppler-utils \
-        # OCR, locally, and this is a deliberate design choice rather than a
-        # convenience. A 1789 volume in the corpus is a pure image scan: 828 pages,
-        # ZERO characters of text layer, one image each. Without a local OCR the
-        # only path for such a page is the vision model, at ~4 100 tokens a page —
-        # 3.4 M tokens for one volume, and a per-page cost that never falls. With
-        # tesseract the same page costs no tokens at all, and the model is kept for
-        # the pages OCR cannot read.
         tesseract-ocr \
         tesseract-ocr-eng \
         fontconfig \
@@ -207,6 +217,12 @@ RUN set -eux; \
     umask 0022; \
     /opt/venv/bin/pip install --no-deps --no-build-isolation .; \
     cd /tmp && /opt/venv/bin/python -c "import docpipe, pypdfium2, pptx, docx, pdfplumber; print('imports ok', docpipe.__version__)"; \
+    # Assert the external tools the operators call actually exist. A package list is
+    # a claim; a lookup is evidence, and the last claim about tesseract was false.
+    for tool in pdftotext pdffonts pdftoppm pdfinfo tesseract; do \
+        command -v "$tool" > /dev/null || { echo "MISSING TOOL: $tool"; exit 1; }; \
+    done; \
+    tesseract --version | head -1; \
     rm -rf /opt/docpipe/build /opt/docpipe/*.egg-info
 
 # ── agent preset, skills, entrypoints ───────────────────────────────────────

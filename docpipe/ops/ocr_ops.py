@@ -1,12 +1,16 @@
 """Read a page image with a local OCR engine, at no token cost.
 
-This exists because one document family has no other local path. A 1789 volume in
-the corpus is a pure image scan: 828 pages, **zero** characters of text layer, one
-image per page. `pdftotext` returns nothing because there is nothing to return, and
-the font-based trust rule has nothing to judge. Without a local OCR the only
-remaining route for every one of those pages is the vision model, at ~4 100 tokens
-a page — 3.4 M tokens for a single volume, and a per-page cost that never falls with
-scale.
+This exists for the case where there is nothing else to read: a page that is an
+image has no characters for `pdftotext` to return and no fonts for the trust rule to
+judge, so without a local OCR the only route for it is the vision model at ~4 100
+tokens a page — a per-page cost that never falls with scale.
+
+What it is NOT for, and this was measured rather than assumed: a scanned book that
+already carries an OCR layer is not improved by OCRing it again. On page 300 of the
+1789 Statutes at Large the layer reads `Ses s . I. Ch . 24.` and a fresh tesseract
+pass reads `Sess. I. Cu. 24.` — 846 tokens against 844, identical word shape, and
+neither is right: the layer inserts spaces, tesseract substitutes characters. Use
+this for pages with no layer, not as a second opinion on a layer that exists.
 
 Tesseract is installed in the image for exactly this. It is not a better reader than
 the model on a hard page; it is a reader that costs nothing, so it goes first and
