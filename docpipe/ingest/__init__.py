@@ -15,7 +15,7 @@ __all__ = ["register_formats"]
 
 #: Formats whose default operators are used when no archetype matches at all.
 DEFAULT_OPS = {
-    "pdf": ("pdf_text_layer", "pdf_tables", "reading_order_v1"),
+    "pdf": ("pdf_text_layer", "pdf_page_images", "pdf_tables", "reading_order_v1"),
     "pptx": ("pptx_slide_text", "office_tables", "pptx_pictures"),
     "docx": ("docx_paragraphs_styled", "office_tables", "docx_media"),
     "text": ("text_passthrough",),

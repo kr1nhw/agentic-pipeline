@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from docpipe.api.types import Block, BBox, Cost, OpContext, OpResult, TablePayload, Timer
+from docpipe.schema import ImagePayload
 
 FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -137,6 +138,71 @@ def op_page_raster(ctx: OpContext, params: dict[str, Any]) -> OpResult:
         signals={"raster_dpi": dpi, "raster_bytes": path.stat().st_size if path.exists() else 0, "raster_uri": str(path)},
         cost=Cost(duration_ms=timer.ms()),
         metadata={"raster": str(path)},
+    )
+
+
+def op_pdf_page_images(ctx: OpContext, params: dict[str, Any]) -> OpResult:
+    """Publish a page's embedded images as figure blocks, with their bytes on disk.
+
+    Offline, a PDF page's figures were nowhere in the output: the vision path renders
+    the whole page for a model to describe, and nothing else touched them. So a page
+    whose meaning is its charts produced text that mentioned the charts and nothing
+    else, and the evaluator — which counts images from the page's own objects —
+    reported them as unaccounted for. On thirty adversarial PDFs that was the entire
+    residual.
+
+    An extracted image is `linked`, not `read`: the block carries a URI and no text,
+    and the evaluator says exactly that. It is the honest description, and it is what
+    a downstream reader — local OCR, a caption, a model — needs in order to read it.
+
+    The skip is cheap and comes first, because most pages have no images and this
+    must not cost those pages anything: the page profile already knows the count.
+    """
+    timer = Timer()
+    session = ctx.session
+    if session is None or not hasattr(session, "page_images"):
+        return OpResult(cost=Cost(duration_ms=timer.ms()), diagnostics=["no PDF session for image extraction"])
+
+    if hasattr(session, "page_profile"):
+        profile = session.page_profile(ctx.state.page_no)
+        if profile.get("profiled") and not profile.get("n_images"):
+            return OpResult(cost=Cost(duration_ms=timer.ms()), signals={"page_images": 0})
+
+    limit = int(params.get("limit", 40))
+    try:
+        images = session.page_images(ctx.state.page_no, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - a failed extraction is reported, not raised
+        return OpResult(ok=False, cost=Cost(duration_ms=timer.ms()), diagnostics=[f"image extraction failed: {exc}"])
+
+    blocks: list[Block] = []
+    artifacts: dict[str, str] = {}
+    for image in images:
+        box = image.get("bbox")
+        block = Block(
+            block_id=f"{ctx.state.page_id}:fig{len(blocks)}",
+            page_id=ctx.state.page_id,
+            order=len(blocks),
+            type="figure",
+            text="",
+            image=ImagePayload(
+                uri=image.get("uri"),
+                width=image.get("width"),
+                height=image.get("height"),
+            ),
+            bbox=BBox(x0=box["x0"], y0=box["y0"], x1=box["x1"], y1=box["y1"]) if box else None,
+            source_op="pdf_page_images",
+            confidence=1.0,
+            checks={"image_index": image.get("index")},
+        )
+        blocks.append(block)
+        if image.get("uri"):
+            artifacts[f"figure_{len(blocks) - 1}"] = str(image["uri"])
+
+    return OpResult(
+        blocks=blocks,
+        artifacts=artifacts,
+        signals={"page_images": len(blocks), "page_images_linked": len(artifacts)},
+        cost=Cost(duration_ms=timer.ms()),
     )
 
 

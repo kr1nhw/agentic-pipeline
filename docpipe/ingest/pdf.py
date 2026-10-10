@@ -909,6 +909,75 @@ class PdfSession(BaseSession):
         return target
 
 
+    def page_images(self, page_no: int, *, limit: int = 40) -> list[dict[str, Any]]:
+        """Extract the images embedded in a page, as files, with their boxes.
+
+        A figure on a page is content. Offline the pipeline emitted nothing at all for
+        it, so a page whose meaning is its charts had that meaning nowhere in the
+        output and the evaluator reported the images as unaccounted for.
+
+        What this produces is an extracted image, not a read one: a figure block with
+        a URI and no text is `linked`, which is the honest description and the right
+        input for whichever reader comes next. The caller decides whether anything
+        reads it.
+
+        `limit` bounds a pathological page — a chart with a thousand image tiles is a
+        page to survive, not one to expand.
+        """
+        found: list[dict[str, Any]] = []
+        with _PDFIUM_LOCK:
+            page = self._pdf[page_no - 1]
+        try:
+            objects = []
+            with _PDFIUM_LOCK:
+                for obj in page.get_objects():
+                    if int(obj.type) == 3:  # FPDF_PAGEOBJ_IMAGE
+                        objects.append(obj)
+                    if len(objects) >= limit:
+                        break
+            for index, image in enumerate(objects):
+                try:
+                    with _PDFIUM_LOCK:
+                        left, bottom, right, top = image.get_pos()
+                    record: dict[str, Any] = {
+                        "index": index,
+                        "bbox": {"x0": float(left), "y0": float(top), "x1": float(right), "y1": float(bottom)},
+                        "uri": None,
+                        "width": None,
+                        "height": None,
+                    }
+                    target = self.media_path(page_no, index)
+                    if not (target.exists() and target.stat().st_size > 0):
+                        with _PDFIUM_LOCK:
+                            bitmap = image.get_bitmap()
+                        try:
+                            pil = bitmap.to_pil()
+                            try:
+                                record["width"], record["height"] = pil.size
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                tmp = target.with_suffix(".png.part")
+                                pil.save(tmp, format="PNG")
+                                tmp.replace(target)
+                            finally:
+                                pil.close()
+                        finally:
+                            bitmap.close()
+                    if target.exists() and target.stat().st_size > 0:
+                        record["uri"] = str(target)
+                    found.append(record)
+                except Exception:  # noqa: BLE001 - one unreadable image is not the page
+                    continue
+        finally:
+            with _PDFIUM_LOCK:
+                page.close()
+        return found
+
+    def media_path(self, page_no: int, index: int) -> Path:
+        target = self.work_dir / "media" / self.doc_id / f"p{page_no:05d}-i{index:02d}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Line assembly
 # ─────────────────────────────────────────────────────────────────────────────

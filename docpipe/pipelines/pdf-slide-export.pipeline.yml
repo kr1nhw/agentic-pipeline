@@ -14,5 +14,6 @@ match:
 steps:
   - {op: pdf_text_layer, params: {preserve_lines: true, drop_running_heads: false}}
   - {op: pdf_tables, params: {strategy: text, min_rows: 2, min_cols: 2}}
+  - {op: pdf_page_images, params: {limit: 40}}
   - {op: caption_blocks, params: {}}
 verify: {gate: gate_default_v1, escalate_to: vl_extract, max_escalations: 1}

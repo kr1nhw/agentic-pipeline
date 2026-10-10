@@ -20,6 +20,9 @@ steps:
   - {op: pdf_text_layer, params: {preserve_lines: false, drop_running_heads: true}}
   - {op: pdf_font_heading_map, params: {size_ratio: 1.12, max_levels: 4}}
   - {op: pdf_tables, params: {strategy: lines, min_rows: 2, min_cols: 2}}
+  # Before `caption_blocks`: a caption is attached to a figure, and a page whose
+  # figures were never published has nothing to attach one to.
+  - {op: pdf_page_images, params: {limit: 40}}
   - {op: caption_blocks, params: {}}
   - {op: reading_order_v1, params: {}}
 assembly: {order: reading_order_v1, drop: [header_footer]}

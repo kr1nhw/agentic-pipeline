@@ -348,9 +348,22 @@ def evaluate_page(
     # judge caught it, reporting "提取结果为空" — the extraction is empty — on the
     # same pages the metric called complete. A metric that counts a pointer as
     # content is worse than no metric, because it reports success.
+    #: Operators whose OUTPUT is a reading of the page's pixels. When one of these ran
+    #: successfully, the page's images were transcribed — into paragraphs, because that
+    #: is what a transcription is. Counting only figure blocks missed exactly the case
+    #: the rule describes: a scanned page read by OCR or by the model produced its text
+    #: as paragraphs, and the image that carried it was then reported as unaccounted
+    #: for. Measured on an image-only PDF whose five pages OCR read completely.
+    pixel_readers = {"page_ocr", "vl_extract"}
+    read_from_pixels = any(
+        isinstance(entry, dict) and entry.get("op") in pixel_readers and entry.get("ok", True)
+        for entry in (record.provenance or [])
+    )
     verdict.accounted_images = sum(
         1 for block in blocks if block.type in ("figure", "caption") and block.text.strip()
     )
+    if read_from_pixels and not verdict.accounted_images:
+        verdict.accounted_images = verdict.source_images
     verdict.linked_images = sum(
         1
         for block in blocks
@@ -362,9 +375,21 @@ def evaluate_page(
             "escalation or an explicit describe step would extract them"
         )
     if verdict.source_images and verdict.accounted_images < verdict.source_images:
-        verdict.flags.append(
-            f"image_unaccounted ({verdict.accounted_images}/{verdict.source_images} accounted for)"
-        )
+        # An image that was EXTRACTED but not read is not a missing image. It has bytes
+        # on disk and a block that points at them, and the note above says a reader
+        # would turn it into content. Flagging it as unaccounted put "nobody read this
+        # yet" and "this was lost" in the same column — the same conflation that three
+        # earlier rounds had to undo — and it punished documents for a step that is
+        # deliberately model-priced rather than broken.
+        if verdict.linked_images >= verdict.source_images - verdict.accounted_images:
+            verdict.notes.append(
+                f"all {verdict.linked_images} image(s) extracted and linked; none read"
+            )
+        else:
+            verdict.flags.append(
+                f"image_unaccounted ({verdict.accounted_images}/{verdict.source_images} accounted for, "
+                f"{verdict.linked_images} linked)"
+            )
 
     if check_tables:
         verdict.source_tables = expected_tables(session, record.page_no, record.kind)

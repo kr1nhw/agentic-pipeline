@@ -849,7 +849,23 @@ class Runner:
         # no tokens at all. Measured on a 1789 volume: 828 pages, zero characters per
         # page, so without this rung every page of it costs ~4 100 model tokens —
         # 3.4 M for one book.
-        characters_missing = "no text layer" in reasons or "cannot be trusted" in reasons
+        # Which pages want OCR before a model? Exactly those with no characters to
+        # read, and there are three ways to have none: no text layer, a layer that
+        # cannot be trusted, or a page that is mostly image with no content on it
+        # (`image area 100% with only 0 characters` — a JBIG2 scan matched the scan
+        # pipeline and went straight to review because this test missed its reason).
+        #
+        # "Only N characters of content" is deliberately NOT here, though it reads
+        # like the same thing. A page can be thin and correct, and OCR output REPLACES
+        # the page's text — so running it on a thin page destroys what was there. The
+        # first version of this matched on that phrase, and the evaluator caught the
+        # damage on the next run: `testExtraSpaces.pdf`, a PDF whose whole point is
+        # unusual spacing, went from 100% text recall to 0% because OCR overwrote a
+        # layer that was right.
+        characters_missing = any(
+            marker in reasons
+            for marker in ("no text layer", "cannot be trusted", "image area")
+        )
         if characters_missing and self._ocr_engine_available():
             return [
                 PlanStep(op="page_ocr", params={"dpi": 200 if attempt == 1 else 260}, reason="local OCR before the model")

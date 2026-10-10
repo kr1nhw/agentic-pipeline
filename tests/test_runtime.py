@@ -1394,3 +1394,140 @@ def test_a_scanned_page_is_not_declared_empty() -> None:
 
     truly_blank = gate(PageSignals(n_paths=0, n_images=0))
     assert truly_blank.get("empty_page") and not truly_blank.get("needs_escalation")
+
+
+def test_a_pdfs_page_images_are_extracted_as_figure_blocks(tmp_path: Path) -> None:
+    """A page's figures must exist in the output, even when nothing has read them.
+
+    Offline, a PDF page's images were nowhere: the vision path renders the whole page
+    for a model, and nothing else touched them, so a page whose meaning is its charts
+    produced text that mentioned the charts and nothing else. On thirty adversarial
+    PDFs the entire residual was eight pages of unaccounted images.
+
+    What the operator produces is LINKED, not read: a figure block with a URI and no
+    text. That is the honest description and it is what a later reader needs.
+
+    The test executes the operator rather than only importing it, because an operator
+    whose body names something the module never imported builds a registry perfectly
+    well and fails on the first page it touches.
+    """
+    from PIL import Image
+    from pypdfium2 import PdfDocument  # noqa: F401  (kept for API symmetry in the reader)
+
+    from docpipe.api.types import DocumentRecord, OpContext, PageState
+    from docpipe.config import Config
+    from docpipe.ingest import pdf as pdfmod
+    from docpipe.ops.media_ops import op_pdf_page_images
+    from docpipe.schema import PageRecord
+
+    # A PDF with one embedded image: Pillow writes it, PDFium reads it back.
+    picture = tmp_path / "figure.png"
+    Image.new("RGB", (240, 160), (20, 40, 200)).save(picture)
+    from PIL import Image as PILImage
+
+    pdf_path = tmp_path / "with-figure.pdf"
+    PILImage.open(picture).convert("RGB").save(pdf_path, "PDF", resolution=150)
+
+    config = Config(out_dir=tmp_path / "out", work_dir=tmp_path / "work", offline=True)
+    session = pdfmod.open_session(pdf_path, "doc", config)
+    try:
+        record = PageRecord(doc_id="doc", page_no=1, page_id="doc:p1", kind="pdf_page")
+        context = OpContext(
+            doc=DocumentRecord(doc_id="doc", source_path=str(pdf_path), format="pdf", bytes=0, sha256="doc"),
+            state=PageState(record=record),
+            work_dir=tmp_path / "work",
+            out_dir=tmp_path / "out",
+            config=config,
+            session=session,
+        )
+        result = op_pdf_page_images(context, {})
+        assert result.blocks, "an image-only page must produce a figure block"
+        linked = [block for block in result.blocks if block.image and block.image.uri]
+        assert linked, f"the figure must carry the extracted bytes: {result.blocks}"
+        assert Path(linked[0].image.uri).is_file(), linked[0].image.uri
+        assert all(not block.text.strip() for block in result.blocks), "an extracted image is linked, not read"
+        assert result.signals["page_images"] == len(result.blocks)
+    finally:
+        session.close()
+
+
+def test_a_page_read_from_its_pixels_accounts_for_its_image() -> None:
+    """Transcribed content is transcribed content, whichever block type carries it.
+
+    The evaluator counts an image as accounted only when something was extracted from
+    it — a description, a caption, transcribed content. But a transcription arrives as
+    PARAGRAPH blocks, because that is what a transcription is, and a rule that looked
+    only at figure blocks reported a scanned page that OCR had read completely as
+    unaccounted for. Measured on an image-only PDF: five pages, all read, all flagged.
+    """
+    from docpipe.api.types import Block, PageState
+    from docpipe.evaluate import evaluate_page
+    from docpipe.schema import ImagePayload, PageRecord
+
+    def context_for(provenance: list[dict]) -> tuple[PageRecord, list[Block]]:
+        record = PageRecord(doc_id="d", page_no=1, page_id="d:p1", kind="pdf_page")
+        record.provenance = provenance
+        record.signals.n_images = 1
+        record.signals.n_paths = 0
+        return record, [
+            Block(block_id="d:p1:ocr0", page_id="d:p1", order=0, type="paragraph",
+                  text="Entered according to Act of Congress", source_op="page_ocr")
+        ]
+
+    class Session:
+        def page_profile(self, page_no):
+            return {"profiled": True, "n_paths": 0, "n_images": 1}
+
+    record, blocks = context_for([{"op": "page_ocr", "ok": True}])
+    verdict = evaluate_page(record, Session(), blocks=blocks, check_tables=False, document_output="")
+    assert verdict.source_images == 1
+    assert verdict.accounted_images == 1, verdict.as_dict()
+    assert not [flag for flag in verdict.flags if "image_unaccounted" in flag]
+
+    # A page whose image was extracted but never read is NOT a page that lost it: the
+    # bytes are on disk and a block points at them. That is a note, and the flag is
+    # reserved for an image that is nowhere in the output.
+    record, blocks = context_for([])
+    linked = [
+        Block(
+            block_id="d:p1:fig0", page_id="d:p1", order=0, type="figure", text="",
+            image=ImagePayload(uri="/tmp/figure.png"), source_op="pdf_page_images",
+        )
+    ]
+    verdict = evaluate_page(record, Session(), blocks=linked, check_tables=False, document_output="")
+    assert verdict.accounted_images == 0
+    assert not [flag for flag in verdict.flags if "image_unaccounted" in flag], verdict.flags
+    assert any("extracted and linked" in note for note in verdict.notes), verdict.notes
+
+    # With nothing at all in the output, the image IS missing.
+    verdict = evaluate_page(record, Session(), blocks=[], check_tables=False, document_output="")
+    assert any("image_unaccounted" in flag for flag in verdict.flags), verdict.flags
+
+
+def test_ocr_is_not_offered_for_a_page_that_is_merely_thin() -> None:
+    """Thin and empty are different, and OCR replaces what it finds.
+
+    The reason "only 69 characters of content (< 80)" reads like "no text layer", and
+    matching on it sent thin-but-correct pages to OCR — whose output replaces the
+    page's text. The evaluator caught the damage on the next run: a PDF whose whole
+    point is unusual spacing went from 100 % text recall to 0 %, because OCR was
+    handed a layer that was already right.
+    """
+    from docpipe.exec.runner import Runner
+
+    runner = Runner.__new__(Runner)
+    runner._ocr_available = True
+
+    class Plan:
+        class verify:  # noqa: N801
+            escalate_to = "vl_extract"
+
+        default_steps: list = []
+
+    thin = Runner._escalation_steps(runner, Plan(), {"reasons": ["only 69 characters of content (< 80)"]}, 1)
+    assert not [step for step in thin if step.op == "page_ocr"], thin
+
+    scanned = Runner._escalation_steps(
+        runner, Plan(), {"reasons": ["image area 100% with only 0 characters of content"]}, 1
+    )
+    assert [step.op for step in scanned] == ["page_ocr"], scanned

@@ -133,6 +133,21 @@ def register_ops(api: PluginAPI) -> None:
     )
 
     api.register_op(
+        "pdf_page_images",
+        media_ops.op_pdf_page_images,
+        summary=(
+            "Publish a PDF page's embedded images as figure blocks with their bytes written out. "
+            "Produces LINKED images, not read ones: the block has a URI and no text. Use it so a "
+            "figure is present in the output at all, and before any operator that describes or "
+            "OCRs one. Skips pages with no images for free."
+        ),
+        params_schema={"limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 500}},
+        cost_class="local",
+        produces=("blocks", "figure"),
+        unit_kinds=("pdf_page",),
+    )
+
+    api.register_op(
         "page_ocr",
         ocr_ops.op_page_ocr,
         summary=(
