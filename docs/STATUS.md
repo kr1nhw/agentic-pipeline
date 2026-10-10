@@ -84,6 +84,49 @@ reported "提取结果为空" — extraction is empty — on the same pages.
 
 ## Measured cost
 
+### Corpus round 12 — a page that is an image no longer needs a model
+
+The harvest added a family the corpus never had: govinfo's digitised historical
+volumes, starting with the Statutes at Large, volume 1 (1789, 828 pages, 158 MB).
+A page that is only an image has no characters for `pdftotext` to return and no fonts
+for the trust rule to judge, so the only route the pipeline had for it was the vision
+model at ~4 100 tokens a page — a per-page cost that never falls with scale.
+
+tesseract is now in the image and wrapped as `page_ocr`, a local operator with a
+wall-clock budget that emits paragraph blocks, reports what it produced, and fails
+cleanly so the ladder falls through to the model when OCR cannot manage. The ladder
+offers it first whenever the reason is missing or untrustworthy characters.
+
+Verified on an image-only document built from the real scan — five pages rendered to
+images and reassembled as a PDF with no text layer at all:
+
+| | value |
+| --- | --- |
+| pages | 5, all `adapted` |
+| gate failures / review | **0 / 0** |
+| vision calls / tokens | **0 / 0** |
+| text | `Entered according to Act of Congress, in the year 1845, by Cuartes C. Lirrte & James Brown` |
+
+The OCR is not perfect on a 1789 page — that line should read `Charles C. Little` —
+but it is readable, it costs nothing, and the model is still there for pages where it
+matters.
+
+**And the measurement that corrected the claim.** The operator was added on the
+grounds that this volume is 828 pages of pure image with *zero* characters of text
+layer. That came from sampling three pages, and all three are blank front matter.
+Measured across the volume: **4 300-5 600 characters a page** — govinfo OCR'd the book
+when it digitised it. A fresh tesseract pass does not beat that layer:
+
+| page 300 | tokens | word shape | reads |
+| --- | --- | --- | --- |
+| the volume's own OCR layer | 846 | 0.91 | `Ses s . I. Ch . 24.` |
+| fresh tesseract at 300 dpi | 844 | 0.91 | `Sess. I. Cu. 24.` |
+
+Neither is right: the layer inserts spaces, tesseract substitutes characters (`Cu.`
+for `Ch.`, `An Met` for `An Act`). Two readers failing differently is not one reader
+being better, so the operator is documented as being for documents with NO layer
+rather than as a second opinion on a layer that exists.
+
 ### Model token usage, measured with the model switched on
 
 The corpus run again with the vision path enabled and a cap of 30 calls, cold cache,
@@ -624,6 +667,13 @@ same pages.
 
 ## Open findings
 
+- **A defective OCR layer is trusted, and nothing catches it.** The 1789 volume's
+  layer carries a Unicode map, so the trust rule has no doubt to report; recall is
+  100 % because the layer matches itself; word shape is 0.91-0.96 because inserted
+  spaces and substituted characters still produce word-like tokens. `Ses s . I. Ch .
+  24.` passes every check the pipeline has. Catching it needs a second reader or a
+  dictionary — the agent judge is the only instrument that would notice today, and it
+  is opt-in and costs tokens.
 - **166 pages of the fresh harvest report `garbled`** (5 %), concentrated in the
   formula-heavy arXiv papers. The pipeline's trust rule uses the same word-shape
   measure, so this may also be driving the 48 `needs_review` pages — it is the next
