@@ -115,6 +115,22 @@ GOVINFO = [
     ("FR-2024-01-10", "rules-and-long-tables"),
 ]
 
+#: GovInfo's digitised historical volumes. These are SCANS: books printed in 1789 and
+#: 1956, photographed and put through OCR, which is the one family the corpus
+#: otherwise lacks and the reason the text-layer trust rule exists. They are large —
+#: 150-300 MB each, because they are whole volumes — so each is fetched only when
+#: asked for by name.
+#:
+#: The per-issue Congressional Record that govinfo serves is NOT a scan: the run
+#: that produced this table checked CREC-1995-01-04 and CREC-1996-01-03 and found
+#: text layers, 46 fonts and no images, i.e. born-digital from the start of the
+#: collection. Guessing a pre-1994 issue id returns the usual 200-and-HTML
+#: placeholder, which the magic-byte check rejects.
+GOVINFO_SCANNED = [
+    ("STATUTE-1", "scanned-historical-book"),
+    ("STATUTE-70", "scanned-historical-book"),
+]
+
 #: IRS forms are the reachable sample of *form* documents: AcroForm fields,
 #: checkboxes, boxed regions, and instructions that wrap around them. A pipeline
 #: tuned on prose will happily read the boxes and lose the field semantics.
@@ -279,6 +295,25 @@ class Harvester:
                 source="govinfo",
                 licence="public domain (US Government work)",
             )
+
+    def govinfo_scanned(self, per_source: int) -> None:
+        """Digitised historical volumes: real scans, large, fetched on request."""
+        print("govinfo historical (scanned volumes, 150-300 MB each)")
+        for name, archetype in GOVINFO_SCANNED[: max(1, per_source)]:
+            url = f"https://www.govinfo.gov/content/pkg/{name}/pdf/{name}.pdf"
+            # A 300 MB download needs more patience than the shared timeout gives.
+            original, self.timeout = self.timeout, max(self.timeout, 900)
+            try:
+                self.save(
+                    f"{name}.pdf",
+                    url,
+                    kind="pdf",
+                    archetype=archetype,
+                    source="govinfo-historical",
+                    licence="public domain (US Government work)",
+                )
+            finally:
+                self.timeout = original
 
     def irs_forms(self, per_source: int) -> None:
         """Government forms: AcroForm widgets, checkboxes, boxed fields."""
@@ -556,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip",
         action="append",
         default=[],
-        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar", "poi"],
+        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar", "poi", "scanned"],
     )
     parser.add_argument("--synthetic-from", nargs="*", default=[], type=Path)
     args = parser.parse_args(argv)
@@ -579,6 +614,8 @@ def main(argv: list[str] | None = None) -> int:
         harvester.edgar(args.per_source)
     if "poi" not in skipped:
         harvester.poi_office(args.per_source)
+    if "scanned" not in skipped:
+        harvester.govinfo_scanned(args.per_source)
     if "office" not in skipped:
         harvester.office_from_github(args.per_source)
     if "synthetic" not in skipped:
