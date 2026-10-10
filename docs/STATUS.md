@@ -47,6 +47,21 @@ here.
 A metric nobody can distinguish from a tautology is worth distrusting, and this one
 survived eleven rounds of review because it always said 100 %.
 
+### The closing sweep
+
+Every corpus run again with every fix in place, offline, no model calls:
+
+| run | documents / pages | wall clock | routes | flags |
+| --- | --- | --- | --- | --- |
+| main corpus | 39 / 1 374 | 16 min | 889 static · **405 repaired** · 62 dynamic · 18 review | 2 |
+| fresh harvest | 102 / 3 207 | 39 min | 2 114 static · **813 repaired** · 208 dynamic · 72 review | in flight |
+| adversarial | 30 / 41 | 23 s | 33 static · **17 repaired** · 8 review | 1 |
+| image-only 1789 scan | 1 / 5 | 22 s | 5 repaired by local OCR | 0 |
+
+The main corpus run is 16 minutes against 23 for the same corpus earlier in the
+session, with the same 0 tokens, and the two flags it reports are two Federal Register
+index pages missing a combined nine tokens out of 1.1 million.
+
 ## How the numbers got here
 
 Eleven rounds of harvesting documents, running them, and folding what broke back into
