@@ -875,43 +875,46 @@ same pages.
   within 0.5 % of a fresh pass mean the layer is ~97 % right with local damage, which
   is a proofreading problem rather than an extraction failure. The pipeline reports
   what it read; it does not claim to have proofread it.
-- **166 pages of the fresh harvest report `garbled`** (5 %), concentrated in the
-  formula-heavy arXiv papers. The pipeline's trust rule uses the same word-shape
-  measure, so this may also be driving the 48 `needs_review` pages — it is the next
-  thing to measure, and the question is the same one that has been asked twice
-  already: is the text debris, or is the measure reading mathematics as debris?
-- **Sixty-nine pages report `table_missing`** — a table the evaluator can see in
-  the source that produced no table block — down from 104 before the evaluator
-  applied the operator's own acceptance rule, and the largest remaining
-  content-quality gap. The weakest documents are ACL papers at 58-75 % table
-  survival: their tables are set with rules the line strategy finds, and the
-  extraction still misses them.
-- **Office pictures are linked, not read.** The evaluator's `image_unaccounted`
-  flags on decks are correct by design: a figure block that points at a file has
-  not been read. The vision path is the remedy, and offline runs leave them for
-  review. What this round fixed is that the bytes were missing entirely for slides
-  holding more than one picture.
-- **Forms report partial table survival.** `f1040` and `f1120` are grids of boxes and the
-  evaluator expects the grid, but most of a form's cells are empty by design and
-  the acceptance rule rejects tables that are more than 60 % empty. Whether a form
-  should produce a table block, a set of field blocks, or both is an open design
-  question, not a bug to patch. `f1040` moved from 0 % to 50 % table survival
-  once the evaluator applied the operator's own acceptance rule.
-- **IRS forms are refused.** `f1040.pdf` (2 units) and `f1120.pdf` (6 units) fail
-  the gate on every page while carrying full text. Forms are the one archetype in
-  the corpus with no working path: boxed fields, checkboxes and instructions that
-  wrap around them. The next round should establish whether the gate is right and
-  the content is genuinely not extractable as prose, or the reader is wrong.
-- **Parallelism stops at one core on large documents.** PDFium access is
-  serialised by a lock and a window maps to a session, so a large document runs
-  effectively single-threaded: the Federal Register (357 pages, 6 MB) held
-  **99.9 % of one core while using 45 MiB** with `--cpus 12 --memory 24g`, which
-  rules out both memory pressure and thread starvation and leaves the lock. The
-  probe is also O(pages) before any extraction starts, since it enumerates and
-  profiles every page and only then samples. Wall-clock elsewhere is ~0.7-0.9
-  s/page (US Code 249 pages in 170 s; Congressional Record 51 pages in 43 s), so
-  this is a throughput ceiling rather than a correctness bug, and it is what to
-  fix before multi-GB inputs.
+This section is the live TODO list. Items that later rounds resolved are kept in
+*Written off since*, with the evidence, so nobody chases them again.
+
+**Live**
+
+- **Forms report partial table survival.** `f1040` and `f1120` are grids of boxes; a
+  form's cells are mostly empty by design and the acceptance rule rejects tables over
+  60 % empty. `f1040` improved 0 % → 50 % when evaluation adopted the operator's own
+  rule. Whether a form should produce a table block, field blocks, or both is an open
+  design question, not a bug to patch.
+- **Images are published, not read.** A figure is extracted with its bytes and linked;
+  reading it is the model's job and is priced accordingly. The vision path is the
+  remedy and offline runs leave those pages for review, which is correct rather than a
+  defect — but it is the largest remaining item that costs tokens.
+- **Parallelism stops at one core on large documents.** PDFium access is serialised by
+  a lock and a window maps to a session, so the Federal Register (357 pages) held
+  **99.9 % of one core while using 45 MiB**, which rules out memory pressure and
+  thread starvation. Threads do not help either: 24 document workers gave 95 threads
+  and 100.7 % of one core, because the work is pure Python under the GIL. Real
+  parallelism needs processes.
+- **A defective OCR layer cannot be detected locally** (measured; three detectors
+  failed — see above).
+- **Multi-GB inputs are untested.** Documents are held in memory before writing.
+- **No sharded run has been diffed against a single-container run.**
+- **The planner's `inspect_page` path and the dynamic (non-catalog) plan path are
+  unexercised.** Every document so far matched an archetype.
+
+**Written off since**
+
+| was | resolved by |
+| --- | --- |
+| 166 pages reported `garbled` on the fresh harvest | the two-condition rule (fonts **and** word shape): 0 on the corpus's last full evaluation |
+| 69 pages reported `table_missing` | `replace_blocks` no longer discards tables the plan extracted: 69 → 1 on 3 207 pages |
+| IRS forms refused on every page | the deterministic escalation rung: 7 pages repaired, 0 review, 0 tokens |
+| Office slides holding two pictures produced figures with no bytes | pictures are extracted by name, at any size |
+| The probe profiled every page to route on sixty | page-selective enumeration |
+| `font_report` re-ran `pdffonts` per page | the cache is written |
+| A 357-page document segfaulted the run | the unlocked PDFium call, plus a test that fails the suite if one returns |
+| An image extracted but unread counted as missing | linked is not lost |
+| Text removed as a duplicate counted as lost | `recall_split`: 98 % of it was repetition |
 
 ## Next three actions
 
