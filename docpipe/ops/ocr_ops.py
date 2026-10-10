@@ -141,11 +141,16 @@ def op_page_ocr(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     characters = sum(len(block.text) for block in blocks)
     characters_total = len(text.strip())
     if not blocks:
+        # The operator did its job: it read the page and the page has no text. That is
+        # a fact about the document, not a failure of the reader, and reporting it as
+        # an error made `report.json` announce five broken documents on a corpus of
+        # thirty adversarial PDFs — four of which were single blank pages. `ok=False`
+        # is reserved for "I could not do my job": no engine, no raster, no time.
         return OpResult(
-            ok=False,
+            ok=True,
             cost=Cost(duration_ms=timer.ms()),
-            signals={"ocr_chars": 0},
-            diagnostics=["ocr produced no text on this page"],
+            signals={"ocr_chars": 0, "ocr_empty": True},
+            diagnostics=["ocr found no text on this page (it reads as blank)"],
             metadata={"ocr": binary},
         )
     return OpResult(

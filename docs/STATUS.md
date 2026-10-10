@@ -667,13 +667,29 @@ same pages.
 
 ## Open findings
 
-- **A defective OCR layer is trusted, and nothing catches it.** The 1789 volume's
-  layer carries a Unicode map, so the trust rule has no doubt to report; recall is
-  100 % because the layer matches itself; word shape is 0.91-0.96 because inserted
-  spaces and substituted characters still produce word-like tokens. `Ses s . I. Ch .
-  24.` passes every check the pipeline has. Catching it needs a second reader or a
-  dictionary — the agent judge is the only instrument that would notice today, and it
-  is opt-in and costs tokens.
+- **A defective OCR layer is trusted, and no local measure detects it — measured,
+  not assumed.** The 1789 volume's layer carries a Unicode map, so the trust rule has
+  no doubt to report; recall against itself is 100 %; word shape is 0.91-0.96. Three
+  candidate detectors were tried and all three failed:
+
+  | page | image area | single-letter rate | agreement with a fresh OCR |
+  | --- | --- | --- | --- |
+  | STATUTE-1 p80, layer reads `Ses s . I. Ch . 5.` | 1.00 | 0.033 | **0.978** |
+  | STATUTE-1 p300, layer reads `Ses s . I. Ch . 24.` | 1.00 | 0.046 | **0.973** |
+  | Congressional Record p3, clean, born-digital | 0.00 | 0.042 | 0.973 |
+  | 2021 ACL p3, clean, born-digital | 0.00 | 0.111 | 0.309 |
+  | Federal Register p3, clean, born-digital | 0.00 | 0.009 | 0.210 |
+
+  A second reader agrees with the DEFECTIVE layer at 0.97 and disagrees with two
+  clean documents at 0.21-0.31, because tesseract makes the same substitutions on
+  18th-century type (`Cu.` for `Ch.`) that the volume's own OCR made. Two readers
+  failing alike is not corroboration, and no reference-free, dictionary-free statistic
+  separates them. Detecting this needs a dictionary, a language model, or a person.
+
+  What the numbers do say is how big the defect is: agreement 0.97 and a token count
+  within 0.5 % of a fresh pass mean the layer is ~97 % right with local damage, which
+  is a proofreading problem rather than an extraction failure. The pipeline reports
+  what it read; it does not claim to have proofread it.
 - **166 pages of the fresh harvest report `garbled`** (5 %), concentrated in the
   formula-heavy arXiv papers. The pipeline's trust rule uses the same word-shape
   measure, so this may also be driving the 48 `needs_review` pages — it is the next

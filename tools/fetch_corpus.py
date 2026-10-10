@@ -131,6 +131,17 @@ GOVINFO_SCANNED = [
     ("STATUTE-70", "scanned-historical-book"),
 ]
 
+#: Apache Tika's PDF test-documents. Tika parses documents for a living and these
+#: fifty-odd files are the ones that defeated it — annotations without contents,
+#: content streams that space glyphs unusually, an embedded Flash object, a journal
+#: parser that must not be confused by a table. A corpus of documents chosen because
+#: they are representative teaches the pipeline what it already handles; a corpus of
+#: documents chosen because they broke something teaches it where it breaks.
+TIKA_PDF_DIRECTORY = (
+    "tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/"
+    "tika-parser-pdf-module/src/test/resources/test-documents"
+)
+
 #: IRS forms are the reachable sample of *form* documents: AcroForm fields,
 #: checkboxes, boxed regions, and instructions that wrap around them. A pipeline
 #: tuned on prose will happily read the boxes and lose the field semantics.
@@ -250,8 +261,15 @@ class Harvester:
         for directory, extension, archetype in POI_LEGACY:
             self._poi_directory(directory, (extension,), archetype, 1)
 
-    def _poi_directory(self, directory: str, extensions: tuple[str, ...], archetype: str, take: int) -> None:
-        url = f"https://api.github.com/repos/apache/poi/contents/{directory}"
+    def _poi_directory(
+        self,
+        directory: str,
+        extensions: tuple[str, ...],
+        archetype: str,
+        take: int,
+        repo: str = "apache/poi",
+    ) -> None:
+        url = f"https://api.github.com/repos/{repo}/contents/{directory}"
         try:
             listing = json.loads(self._open(url))
         except Exception as exc:  # noqa: BLE001
@@ -278,8 +296,8 @@ class Harvester:
                 item["download_url"],
                 kind=extensions[0],
                 archetype=archetype,
-                source=f"poi:{directory}",
-                licence="Apache-2.0 (apache/poi test-data)",
+                source=f"{repo}:{directory}",
+                licence=f"Apache-2.0 ({repo})",
             )
 
     def govinfo(self, per_source: int) -> None:
@@ -295,6 +313,11 @@ class Harvester:
                 source="govinfo",
                 licence="public domain (US Government work)",
             )
+
+    def tika_pdfs(self, per_source: int) -> None:
+        """PDFs contributed to Apache Tika because they broke it."""
+        print("Apache Tika test-documents (PDFs that defeated a mature parser)")
+        self._poi_directory(TIKA_PDF_DIRECTORY, ("pdf",), "adversarial-pdf", per_source, repo="apache/tika")
 
     def govinfo_scanned(self, per_source: int) -> None:
         """Digitised historical volumes: real scans, large, fetched on request."""
@@ -591,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip",
         action="append",
         default=[],
-        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar", "poi", "scanned"],
+        choices=["arxiv", "acl", "rfc", "office", "synthetic", "govinfo", "irs", "edgar", "poi", "scanned", "tika"],
     )
     parser.add_argument("--synthetic-from", nargs="*", default=[], type=Path)
     args = parser.parse_args(argv)
@@ -616,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
         harvester.poi_office(args.per_source)
     if "scanned" not in skipped:
         harvester.govinfo_scanned(args.per_source)
+    if "tika" not in skipped:
+        harvester.tika_pdfs(args.per_source)
     if "office" not in skipped:
         harvester.office_from_github(args.per_source)
     if "synthetic" not in skipped:

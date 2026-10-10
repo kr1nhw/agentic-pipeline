@@ -406,6 +406,14 @@ class PdfSession(BaseSession):
             layout = self.page_layout(page_no)
             signals.columns = layout.get("columns", 1)
             signals.text_layer_trust = layout.get("trust", 1.0)
+            # What the page actually DRAWS travels with the signals, because the gate
+            # needs it to tell an empty page from an unread one: no text, no blocks,
+            # no paths and no images is a blank leaf, not a failure. The profile is
+            # already computed for the layout, so this costs nothing.
+            profile = self.page_profile(page_no)
+            if profile.get("profiled"):
+                signals.n_paths = int(profile.get("n_paths") or 0)
+                signals.n_images = int(profile.get("n_images") or 0)
             # The measurement behind a distrust decision travels with the signal,
             # so the gate can report the evidence instead of restating a rule.
             shape = self.font_report().get("word_shape")
@@ -710,7 +718,16 @@ class PdfSession(BaseSession):
                 page_width = float(page.get_width())
                 n_paths = 0
                 n_rules = 0
+                n_images = 0
                 for obj in page.get_objects():
+                    if int(obj.type) == 3:  # FPDF_PAGEOBJ_IMAGE
+                        # Counted in the same pass as the paths, because the gate
+                        # needs it to tell a blank page from an image-only one: a
+                        # scan has no paths and no text, so a rule that looked only
+                        # at paths would call every page of a scanned book empty and
+                        # skip it silently.
+                        n_images += 1
+                        continue
                     if int(obj.type) != 2:  # FPDF_PAGEOBJ_PATH
                         continue
                     n_paths += 1
@@ -722,6 +739,7 @@ class PdfSession(BaseSession):
                         n_rules += 1
                 profile["n_paths"] = n_paths
                 profile["n_rules"] = n_rules
+                profile["n_images"] = n_images
 
                 textpage = page.get_textpage()
                 count = textpage.count_chars()

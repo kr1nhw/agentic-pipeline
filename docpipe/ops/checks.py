@@ -86,9 +86,22 @@ def op_gate_default(ctx: OpContext, params: dict[str, Any]) -> OpResult:
     if image_area is not None and image_area >= image_fraction and content_chars < SCAN_TEXT_CEILING:
         reasons.append(f"image area {image_area:.0%} with only {content_chars} characters of content")
 
-    # 3. Empty page that should not be empty.
+    # 3. Empty page that should not be empty — and the exception to it.
     if content_chars == 0 and not record.blocks:
-        reasons.append("no text layer and no blocks")
+        # A page with nothing on it is not a page we failed to read. Blank leaves are
+        # normal in scanned volumes and in documents built from templates, and
+        # flagging them for review spends a person's attention on a page that has
+        # nothing to check. "Nothing drawn" is decidable from the page's own objects:
+        # no text, no blocks, no vector paths and no images means empty.
+        n_paths = getattr(signals, "n_paths", None)
+        n_images = getattr(signals, "n_images", None)
+        drawn = (n_paths or 0) + (n_images or 0)
+        if n_paths is not None and drawn == 0:
+            # Recorded in the metrics rather than as a reason: the page passed, and a
+            # reader of the report can still see why it produced nothing.
+            metrics["empty_page"] = True
+        else:
+            reasons.append("no text layer and no blocks")
 
     # 4. Thin content on a page that clearly has something.
     elif 0 < content_chars < text_floor and record.kind == "pdf_page":

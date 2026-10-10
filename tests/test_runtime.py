@@ -1323,3 +1323,74 @@ def test_ocr_output_is_reassembled_into_paragraphs() -> None:
     assert blocks == ["THE first section of this Act shall be construed together with the", "SECOND section."], blocks
     assert _paragraphs("") == []
     assert _paragraphs("   \n  \n") == []
+
+
+def test_a_blank_page_is_not_an_unreadable_one() -> None:
+    """Nothing drawn is not the same as nothing read.
+
+    Blank leaves are normal in scanned volumes and in documents built from templates.
+    Flagging them for review spends a person's attention on a page with nothing to
+    check, and reporting them as errors made `report.json` announce five broken
+    documents on a corpus of thirty adversarial PDFs — four of them single blank
+    pages with zero ink.
+
+    "Nothing drawn" is decidable from the page's own objects: no text, no blocks, no
+    vector paths and no images. A page with paths or images and no text is a different
+    case and still goes to review, because then something IS there.
+    """
+    from docpipe.api.types import Block, PageState
+    from docpipe.ops.checks import op_gate_default
+    from docpipe.schema import PageRecord, PageSignals
+
+    class Context:
+        config = Config(offline=True)
+        state: PageState
+
+        def __init__(self) -> None:
+            self.state = PageState(
+                record=PageRecord(doc_id="d", page_no=1, page_id="d:p1", kind="pdf_page")
+            )
+
+    def gate(signals: PageSignals, blocks: list[Block]) -> dict:
+        context = Context()
+        context.state.record.signals = signals
+        context.state.record.blocks = blocks
+        return op_gate_default(context, {}).metadata.get("quality") or {}
+
+    blank = gate(PageSignals(n_paths=0, n_images=0), [])
+    assert blank.get("empty_page") is True, "a blank page must not be a failure"
+    assert not blank.get("needs_escalation"), blank
+
+    drawn = gate(PageSignals(n_paths=0, n_images=1), [])
+    assert not drawn.get("empty_page")
+    assert drawn.get("needs_escalation"), "an image with no text still needs a look"
+
+
+def test_a_scanned_page_is_not_declared_empty() -> None:
+    """A scan has no paths and no text, so "nothing drawn" must count images too.
+
+    The blank-page rule reads the page's own objects: no text, no blocks, no paths
+    and no images means an empty leaf. A scanned page is exactly the case that makes
+    the image count load-bearing — it has no vector paths and no text layer, so a
+    rule that looked only at paths would declare every page of a scanned book empty
+    and skip it, turning a content family into silence.
+    """
+    from docpipe.api.types import PageState
+    from docpipe.ops.checks import op_gate_default
+    from docpipe.schema import PageRecord, PageSignals
+
+    class Context:
+        config = Config(offline=True)
+        state = PageState(record=PageRecord(doc_id="d", page_no=1, page_id="d:p1", kind="pdf_page"))
+
+    def gate(signals: PageSignals) -> dict:
+        context = Context()
+        context.state.record.signals = signals
+        return op_gate_default(context, {}).metadata.get("quality") or {}
+
+    scanned = gate(PageSignals(n_paths=0, n_images=1))
+    assert not scanned.get("empty_page"), "a scan is not an empty page"
+    assert scanned.get("needs_escalation"), "a scan must go on to be read"
+
+    truly_blank = gate(PageSignals(n_paths=0, n_images=0))
+    assert truly_blank.get("empty_page") and not truly_blank.get("needs_escalation")
