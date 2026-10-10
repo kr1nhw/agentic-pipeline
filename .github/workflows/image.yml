@@ -124,6 +124,14 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # Attestations off, and this is about who cannot pull the result rather
+          # than about the image's content. With them on, the tag resolves to an OCI
+          # INDEX containing the image manifest plus a provenance manifest whose
+          # platform is `unknown/unknown`; docker 18.09 — the version on the host
+          # this project runs on — has no idea what that second entry is and refuses
+          # the pull. One platform, one manifest, pullable by an old client.
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
